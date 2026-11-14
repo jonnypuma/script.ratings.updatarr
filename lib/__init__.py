@@ -1,0 +1,1 @@
+"""Ratings Updatarr library."""
