@@ -1,0 +1,294 @@
+<?xml version="1.0" ?>
+<settings version="1">
+  <section id="script.ratings.updatarr">
+    <category id="sources" label="32001" help="32056">
+      <group id="1" label="32001">
+        <setting id="use_imdb_data" type="boolean" label="32036" help="32037">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="imdb_refresh_days" type="integer" label="32038" help="32037">
+          <level>0</level>
+          <default>30</default>
+          <constraints>
+            <minimum>7</minimum>
+            <step>1</step>
+            <maximum>365</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_imdb_data" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer">
+            <popup>false</popup>
+          </control>
+        </setting>
+        <setting id="imdb_user_agent" type="string" label="32039" help="32040">
+          <level>0</level>
+          <default/>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_imdb_data" operator="is">true</dependency>
+          </dependencies>
+          <control type="edit" format="string">
+            <heading>32039</heading>
+          </control>
+        </setting>
+        <setting id="imdb_path" type="path" label="32059" help="32060">
+          <level>0</level>
+          <default/>
+          <constraints>
+            <allowempty>true</allowempty>
+            <writable>true</writable>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_imdb_data" operator="is">true</dependency>
+          </dependencies>
+          <control type="button" format="path">
+            <heading>32059</heading>
+          </control>
+        </setting>
+        <setting id="imdb_download_now" type="action" label="32051" help="32061">
+          <level>0</level>
+          <dependencies>
+            <dependency type="enable" setting="use_imdb_data" operator="is">true</dependency>
+          </dependencies>
+          <control type="button" format="action">
+            <data>RunScript(script.ratings.updatarr,action=refreshimdb)</data>
+            <close>true</close>
+          </control>
+        </setting>
+        <setting id="use_tmdb" type="boolean" label="32016" help="32011">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="tmdb_key" type="string" label="32010" help="32011">
+          <level>0</level>
+          <default/>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="visible" setting="use_tmdb" operator="is">true</dependency>
+          </dependencies>
+          <control type="edit" format="string">
+            <heading>32010</heading>
+          </control>
+        </setting>
+        <setting id="use_omdb" type="boolean" label="32017" help="32013">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="omdb_key" type="string" label="32012" help="32013">
+          <level>0</level>
+          <default/>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_omdb" operator="is">true</dependency>
+          </dependencies>
+          <control type="edit" format="string">
+            <heading>32012</heading>
+          </control>
+        </setting>
+        <setting id="use_trakt" type="boolean" label="32018" help="32015">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="trakt_key" type="string" label="32014" help="32015">
+          <level>0</level>
+          <default/>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_trakt" operator="is">true</dependency>
+          </dependencies>
+          <control type="edit" format="string">
+            <heading>32014</heading>
+          </control>
+        </setting>
+        <setting id="use_tmdbhelper" type="boolean" label="32052" help="32053">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="omdb_daily_limit" type="integer" label="32054" help="32055">
+          <level>0</level>
+          <default>1000</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>100</step>
+            <maximum>250000</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="use_omdb" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer">
+            <popup>false</popup>
+          </control>
+        </setting>
+      </group>
+    </category>
+    <category id="library" label="32002" help="32058">
+      <group id="1" label="32057">
+        <setting id="schedule_movies" type="boolean" label="32032" help="32058">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="schedule_tvshows" type="boolean" label="32033" help="32058">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="schedule_episodes" type="boolean" label="32034" help="32058">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+      </group>
+      <group id="2" label="32002">
+        <setting id="default_rating" type="string" label="32019" help="32173">
+          <level>0</level>
+          <default>keep</default>
+          <constraints>
+            <options>
+              <option label="32020">keep</option>
+              <option label="32021">imdb</option>
+              <option label="32022">themoviedb</option>
+              <option label="32023">trakt</option>
+              <option label="32024">tomatometerallcritics</option>
+              <option label="32025">metacritic</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="save_ids" type="boolean" label="32028" help="32029">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="delay_ms" type="integer" label="32026" help="32027">
+          <level>0</level>
+          <default>250</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>50</step>
+            <maximum>5000</maximum>
+          </constraints>
+          <control type="slider" format="integer">
+            <popup>false</popup>
+          </control>
+        </setting>
+        <setting id="update_missing_only" type="boolean" label="32062" help="32063">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="minimum_change" type="number" label="32041" help="32042">
+          <level>0</level>
+          <default>0.2</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>0.1</step>
+            <maximum>5</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="update_missing_only" operator="is">false</dependency>
+          </dependencies>
+          <control type="slider" format="number">
+            <popup>false</popup>
+          </control>
+        </setting>
+      </group>
+    </category>
+    <category id="schedule" label="32003" help="32174">
+      <group id="1" label="32003">
+        <setting id="schedule_enabled" type="boolean" label="32030" help="32174">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="schedule_mode" type="string" label="32043" help="32174">
+          <level>0</level>
+          <default>daily</default>
+          <constraints>
+            <options>
+              <option label="32044">daily</option>
+              <option label="32045">interval</option>
+            </options>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="schedule_enabled" operator="is">true</dependency>
+          </dependencies>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="schedule_times" type="string" label="32046" help="32047">
+          <level>0</level>
+          <default>03:00</default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="schedule_enabled" operator="is">true</dependency>
+            <dependency type="visible" setting="schedule_mode" operator="is">daily</dependency>
+          </dependencies>
+          <control type="edit" format="string">
+            <heading>32046</heading>
+          </control>
+        </setting>
+        <setting id="schedule_hours" type="integer" label="32031" help="32174">
+          <level>0</level>
+          <default>168</default>
+          <constraints>
+            <minimum>1</minimum>
+            <step>1</step>
+            <maximum>720</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="schedule_enabled" operator="is">true</dependency>
+            <dependency type="visible" setting="schedule_mode" operator="is">interval</dependency>
+          </dependencies>
+          <control type="slider" format="integer">
+            <popup>false</popup>
+          </control>
+        </setting>
+        <setting id="schedule_background" type="boolean" label="32048" help="32174">
+          <level>0</level>
+          <default>true</default>
+          <dependencies>
+            <dependency type="enable" setting="schedule_enabled" operator="is">true</dependency>
+          </dependencies>
+          <control type="toggle"/>
+        </setting>
+        <setting id="manual_background" type="boolean" label="32049">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="startup_delay" type="integer" label="32035">
+          <level>0</level>
+          <default>120</default>
+          <constraints>
+            <minimum>0</minimum>
+            <step>10</step>
+            <maximum>3600</maximum>
+          </constraints>
+          <dependencies>
+            <dependency type="enable" setting="schedule_enabled" operator="is">true</dependency>
+          </dependencies>
+          <control type="slider" format="integer">
+            <popup>false</popup>
+          </control>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
