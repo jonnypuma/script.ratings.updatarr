@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.venv/
+venv/
+
+# Packaged addon zips are built locally and are not part of the source tree
+*.zip
+*.egg-info/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.code-workspace
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Kodi logs left next to a test run
+*.log

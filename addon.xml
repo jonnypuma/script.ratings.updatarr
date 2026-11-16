@@ -1,8 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.ratings.updatarr" name="Ratings Updatarr" version="1.2.8" provider-name="Ratings Updatarr">
+<addon id="script.ratings.updatarr" name="Ratings Updatarr" version="1.2.9" provider-name="Skippy-McSkipface">
   <requires>
     <import addon="xbmc.python" version="3.0.1"/>
-    <import addon="xbmc.addon" version="21.90.700"/>
     <import addon="plugin.video.themoviedb.helper" version="5.3.0" optional="true"/>
   </requires>
   <extension point="xbmc.python.script" library="default.py">
@@ -24,7 +23,9 @@
     <source>local</source>
     <summary lang="en_GB">Refresh library ratings by media type</summary>
     <description lang="en_GB">Refresh scraped ratings for movies, TV shows, episodes, or all of those types. IMDb scores come from IMDb's non-commercial dataset files. TMDb is the main online source, and a score already cached by TMDbHelper is reused. OMDb adds Rotten Tomatoes critic and Metacritic scores. Trakt adds a public Trakt score. Requests stay inside the limits published by those services. Personal star ratings are left alone. This product uses the TMDb API but is not endorsed or certified by TMDb.</description>
-    <news>v1.2.8
+    <news>v1.2.9
+- Installs on Kodi Omega 21.2
+v1.2.8
 - Use TMDbHelper's cached TMDb score when no TMDb key is set
 v1.2.7
 - Show the summary after a finished update

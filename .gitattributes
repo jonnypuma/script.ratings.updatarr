@@ -1,0 +1,26 @@
+# Keep the repository in LF so Windows and Linux checkouts match.
+* text=auto eol=lf
+
+*.py text eol=lf diff=python
+*.xml text eol=lf
+*.po text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.zip binary
+
+resources/language/**/*.po linguist-language=Gettext
+
+# Leave development files out of git archive and GitHub source downloads.
+.github export-ignore
+.editorconfig export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore
+tests export-ignore

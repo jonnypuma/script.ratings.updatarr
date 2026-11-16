@@ -737,11 +737,11 @@ class LimitTests(unittest.TestCase):
 
 
 class PackageTests(unittest.TestCase):
-    def test_addon_declares_piers_and_its_files_exist(self):
+    def test_addon_installs_on_omega_and_lists_its_files(self):
         addon = (ROOT / "addon.xml").read_text(encoding="utf-8")
         self.assertIn('id="script.ratings.updatarr"', addon)
         self.assertIn('addon="xbmc.python" version="3.0.1"', addon)
-        self.assertIn('addon="xbmc.addon" version="21.90.700"', addon)
+        self.assertNotIn('<import addon="xbmc.addon"', addon)
         self.assertIn("kodi.context.item", addon)
         self.assertIn("context_item.py", addon)
         self.assertIn("service.py", addon)
