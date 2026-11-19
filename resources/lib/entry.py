@@ -21,11 +21,13 @@ MISSING_KEY = {
     "tmdb": 32160,
     "omdb": 32161,
     "trakt": 32162,
+    "mdblist": 32164,
 }
 PROVIDER_LABEL = {
     "tmdb": "TMDb",
     "omdb": "OMDb",
     "trakt": "Trakt",
+    "mdblist": "MDbList",
 }
 ZERO_COUNTS = {"checked": 0, "updated": 0, "unchanged": 0, "skipped": 0, "failed": 0}
 
@@ -44,8 +46,11 @@ def main(argv) -> None:
         return
     background = _background_flag(params)
     raw_type = params.get("mediatype") or params.get("content") or params.get("type") or params.get("dbtype") or ""
-    types = parse_media_types(raw_type)
     dbid = params.get("dbid", "").strip()
+    if dbid.isdigit() and raw_type.strip().lower() == "season":
+        run_season(int(dbid), background)
+        return
+    types = parse_media_types(raw_type)
     if dbid.isdigit() and len(types) == 1:
         run_one(types[0], int(dbid), background)
         return
@@ -83,11 +88,46 @@ def main(argv) -> None:
 
 def context_main() -> None:
     dbtype, dbid = kodi.selected_library_item()
+    if dbtype == "season" and dbid >= 1:
+        background = kodi.load_config().manual_background
+        selected = kodi.choose(
+            kodi.text(32105),
+            [kodi.text(32158), kodi.text(SPECS["episode"].all_string), kodi.text(32156)],
+        )
+        if selected == 0:
+            run_season(dbid, background)
+        elif selected == 1:
+            allowed = _types_for_run(["episode"])
+            if allowed:
+                run_many(allowed, background, scheduled=False)
+        elif selected == 2:
+            allowed = _types_for_run(list(ALL_TYPES))
+            if allowed:
+                run_many(allowed, background, scheduled=False)
+        return
     spec = SPECS.get(dbtype)
     if spec is None or dbid < 1:
         kodi.notify(kodi.text(32172), "warning")
         return
     background = kodi.load_config().manual_background
+    if spec.name == "tvshow":
+        selected = kodi.choose(
+            kodi.text(32105),
+            [kodi.text(spec.item_string), kodi.text(32157), kodi.text(spec.all_string), kodi.text(32156)],
+        )
+        if selected == 0:
+            run_one(spec.name, dbid, background)
+        elif selected == 1:
+            run_show(dbid, background)
+        elif selected == 2:
+            allowed = _types_for_run(["tvshow"])
+            if allowed:
+                run_many(allowed, background, scheduled=False)
+        elif selected == 3:
+            allowed = _types_for_run(list(ALL_TYPES))
+            if allowed:
+                run_many(allowed, background, scheduled=False)
+        return
     selected = kodi.choose(
         kodi.text(32105),
         [kodi.text(spec.item_string), kodi.text(spec.all_string), kodi.text(32156)],
@@ -107,10 +147,14 @@ def context_main() -> None:
 def service_main() -> None:
     monitor = kodi.KodiMonitor()
     waited_for_startup = False
+    pending_scan_update = False
     while not monitor.abort_requested():
         config = kodi.load_config()
-        interested = config.schedule_enabled or config.use_imdb_data
+        if monitor.pop_scan_finished():
+            pending_scan_update = True
+        interested = config.schedule_enabled or config.use_imdb_data or config.update_on_scan
         if not interested:
+            pending_scan_update = False
             if monitor.wait(30):
                 return
             continue
@@ -119,15 +163,33 @@ def service_main() -> None:
             if config.startup_delay and monitor.wait(config.startup_delay):
                 return
             config = kodi.load_config()
+            if monitor.pop_scan_finished():
+                pending_scan_update = True
+        if config.pause_during_playback and kodi.is_playing_video():
+            if monitor.wait(30):
+                return
+            continue
         if config.use_imdb_data:
             _refresh_imdb_if_due(config, monitor)
             if monitor.abort_requested():
                 return
+        if pending_scan_update:
+            pending_scan_update = False
+            if config.update_on_scan and config.schedule_types and config.any_active(_helper_available(config)):
+                run_many(
+                    list(config.schedule_types),
+                    True,
+                    scheduled=False,
+                    recent_days_override=config.recent_days or 7,
+                )
+                if monitor.wait(30):
+                    return
+                continue
         if not config.schedule_enabled or not config.schedule_types:
             if monitor.wait(30):
                 return
             continue
-        if not config.any_active():
+        if not config.any_active(_helper_available(config)):
             kodi.log("Scheduled ratings update skipped because no source is configured")
             if monitor.wait(1800):
                 return
@@ -141,7 +203,7 @@ def service_main() -> None:
             return
 
 
-def run_one(mediatype: str, dbid: int, background: bool) -> None:
+def _run_custom(types: list[str], background: bool, runner) -> None:
     config = kodi.load_config()
     if not _ready(config, scheduled=False):
         return
@@ -154,18 +216,38 @@ def run_one(mediatype: str, dbid: int, background: bool) -> None:
     try:
         _warn_missing(config, scheduled=False)
         library = kodi.KodiLibrary()
-        item = library.get_item(mediatype, dbid)
-        if item is None:
+        progress = kodi.open_progress(kodi.text(32105), background, monitor)
+        sources, limiter = _sources(config, progress, monitor)
+        stats = runner(library, sources, config, progress, monitor)
+        if stats is None:
             kodi.notify(kodi.text(32166), "info")
             return
+        _announce(stats, types, background, scheduled=False)
+    except DatasetCancelled:
+        _announce_cancelled(types, background, scheduled=False)
+    except RunCancelled:
+        _announce_cancelled(types, background, scheduled=False)
+    except Exception as exc:
+        _announce_error(exc, types, background, scheduled=False)
+    finally:
+        if limiter is not None:
+            kodi.write_limits(limiter.state)
+        if progress is not None:
+            progress.close()
+        kodi.unlock()
+
+
+def run_one(mediatype: str, dbid: int, background: bool) -> None:
+    def runner(library, sources, config, progress, monitor):
+        item = library.get_item(mediatype, dbid)
+        if item is None:
+            return None
         shows = {}
         if item.mediatype == "episode" and item.tvshowid:
             show = library.get_item("tvshow", item.tvshowid)
             if show is not None:
                 shows = {show.dbid: show}
-        progress = kodi.open_progress(kodi.text(32105), background, monitor)
-        sources, limiter = _sources(config, progress, monitor)
-        stats = update_items(
+        return update_items(
             [item],
             shows,
             library,
@@ -177,22 +259,61 @@ def run_one(mediatype: str, dbid: int, background: bool) -> None:
             type_label=_type_label,
             item_message=_item_message,
         )
-        _announce(stats, [mediatype], background, scheduled=False)
-    except DatasetCancelled:
-        _announce_cancelled([mediatype], background, scheduled=False)
-    except RunCancelled:
-        _announce_cancelled([mediatype], background, scheduled=False)
-    except Exception as exc:
-        _announce_error(exc, [mediatype], background, scheduled=False)
-    finally:
-        if limiter is not None:
-            kodi.write_limits(limiter.state)
-        if progress is not None:
-            progress.close()
-        kodi.unlock()
+
+    _run_custom([mediatype], background, runner)
 
 
-def run_many(types: list[str], background: bool, scheduled: bool) -> None:
+def run_show(tvshowid: int, background: bool) -> None:
+    def runner(library, sources, config, progress, monitor):
+        show = library.get_item("tvshow", tvshowid)
+        if show is None:
+            return None
+        episodes = library.list_episodes_for_show(tvshowid)
+        return update_items(
+            [show, *episodes],
+            {show.dbid: show},
+            library,
+            sources,
+            config,
+            progress=progress,
+            pause=monitor.pause,
+            log=kodi.log,
+            type_label=_type_label,
+            item_message=_item_message,
+        )
+
+    _run_custom(["tvshow", "episode"], background, runner)
+
+
+def run_season(seasonid: int, background: bool) -> None:
+    def runner(library, sources, config, progress, monitor):
+        details = library.get_season(seasonid)
+        if not details or not details.get("tvshowid") or details.get("season") is None:
+            return None
+        tvshowid = int(details["tvshowid"])
+        season_num = int(details["season"])
+        show = library.get_item("tvshow", tvshowid)
+        shows = {show.dbid: show} if show is not None else {}
+        episodes = library.list_episodes_for_show(tvshowid, season=season_num)
+        if not episodes:
+            return None
+        return update_items(
+            episodes,
+            shows,
+            library,
+            sources,
+            config,
+            progress=progress,
+            pause=monitor.pause,
+            log=kodi.log,
+            type_label=_type_label,
+            item_message=_item_message,
+        )
+
+    _run_custom(["episode"], background, runner)
+
+
+def run_many(types: list[str], background: bool, scheduled: bool, recent_days_override: int | None = None) -> None:
     config = kodi.load_config()
     if not _ready(config, scheduled):
         return
@@ -221,18 +342,15 @@ def run_many(types: list[str], background: bool, scheduled: bool) -> None:
             type_label=_type_label,
             reading=lambda kind: kodi.text(32171, kind=kind),
             item_message=_item_message,
+            recent_days_override=recent_days_override,
         )
         _announce(stats, types, background, scheduled)
-        if scheduled:
+        if scheduled and not stats.cancelled:
             kodi.write_last_run()
     except DatasetCancelled:
         _announce_cancelled(types, background, scheduled)
-        if scheduled:
-            kodi.write_last_run()
     except RunCancelled:
         _announce_cancelled(types, background, scheduled)
-        if scheduled:
-            kodi.write_last_run()
     except Exception as exc:
         _announce_error(exc, types, background, scheduled)
         if scheduled:
@@ -280,7 +398,11 @@ def show_runs() -> None:
         return
     lines = []
     for run in runs:
-        lines.append(f"{run.get('finished', '')}\n{run.get('summary', '')}")
+        entry = f"{run.get('finished', '')}\n{run.get('summary', '')}"
+        failures = run.get("failures") or []
+        if failures:
+            entry += "\n" + "\n".join(f"  - {err}" for err in failures)
+        lines.append(entry)
     kodi.show_text(kodi.text(32050), "\n\n".join(lines))
 
 
@@ -316,7 +438,11 @@ def _sources(config, progress, monitor):
             kodi.log(str(exc))
         if data.ready():
             index = data
-    limiter = Limiter(omdb_daily=config.omdb_daily_limit, state=kodi.read_limits())
+    limiter = Limiter(
+        omdb_daily=config.omdb_daily_limit,
+        mdblist_daily=config.mdblist_daily_limit,
+        state=kodi.read_limits(),
+    )
 
     def sleeper(seconds: float) -> bool:
         if monitor is not None and monitor.pause(seconds):
@@ -353,6 +479,7 @@ def _refresh_index(data: ImdbData, config, progress, monitor, force: bool) -> bo
         report=report,
         should_stop=should_stop,
         force=force,
+        progress=(lambda pct, msg: progress.update(pct, msg)) if progress is not None else None,
     )
     if result.get("changed"):
         counts = result.get("counts") or {}
@@ -388,8 +515,12 @@ def _background_flag(params: dict) -> bool:
     return kodi.load_config().manual_background
 
 
+def _helper_available(config) -> bool:
+    return bool(getattr(config, "use_tmdbhelper", True) and kodi.addon_installed("plugin.video.themoviedb.helper"))
+
+
 def _ready(config, scheduled: bool) -> bool:
-    if config.any_active():
+    if config.any_active(_helper_available(config)):
         return True
     if scheduled:
         return False
@@ -399,15 +530,17 @@ def _ready(config, scheduled: bool) -> bool:
 
 
 def _warn_missing(config, scheduled: bool) -> None:
-    helper_ready = config.use_tmdbhelper and kodi.addon_installed("plugin.video.themoviedb.helper")
-    missing = config.missing_keys(tmdbhelper_available=helper_ready)
+    missing = config.missing_keys(tmdbhelper_available=_helper_available(config))
     if not missing:
         return
-    message = kodi.text(MISSING_KEY[missing[0]])
-    if scheduled:
-        kodi.log(message)
+    messages = [kodi.text(MISSING_KEY[key]) for key in missing if key in MISSING_KEY]
+    if not messages:
         return
-    kodi.notify(message, "warning")
+    if scheduled:
+        for message in messages:
+            kodi.log(message)
+        return
+    kodi.notify(messages[0], "warning")
 
 
 def _announce(stats, types, background: bool, scheduled: bool) -> None:
@@ -423,7 +556,8 @@ def _announce(stats, types, background: bool, scheduled: bool) -> None:
         message = kodi.text(32167, **counts)
         kind = "info" if stats.total_seen == 0 or stats.updated or not stats.failed else "warning"
     kodi.log(message)
-    _store_run(types, background, scheduled, counts, stats.cancelled, stats.stopped, message)
+    failures = list(getattr(stats, "failures", ()) or ())
+    _store_run(types, background, scheduled, counts, stats.cancelled, stats.stopped, message, failures)
     _show_result(message, background, kind)
 
 
@@ -448,23 +582,33 @@ def _show_result(message: str, background: bool, kind: str) -> None:
     kodi.show_summary(kodi.text(32105), message)
 
 
-def _store_run(types, background: bool, scheduled: bool, counts: dict, cancelled: bool, stopped: str, summary: str) -> None:
-    kodi.append_run(
-        {
-            "finished": datetime.now(timezone.utc).isoformat(),
-            "types": list(types),
-            "background": bool(background),
-            "scheduled": bool(scheduled),
-            "checked": counts["checked"],
-            "updated": counts["updated"],
-            "unchanged": counts["unchanged"],
-            "skipped": counts["skipped"],
-            "failed": counts["failed"],
-            "cancelled": bool(cancelled),
-            "stopped": stopped or "",
-            "summary": summary,
-        }
-    )
+def _store_run(
+    types,
+    background: bool,
+    scheduled: bool,
+    counts: dict,
+    cancelled: bool,
+    stopped: str,
+    summary: str,
+    failures: list | None = None,
+) -> None:
+    record = {
+        "finished": datetime.now(timezone.utc).isoformat(),
+        "types": list(types),
+        "background": bool(background),
+        "scheduled": bool(scheduled),
+        "checked": counts["checked"],
+        "updated": counts["updated"],
+        "unchanged": counts["unchanged"],
+        "skipped": counts["skipped"],
+        "failed": counts["failed"],
+        "cancelled": bool(cancelled),
+        "stopped": stopped or "",
+        "summary": summary,
+    }
+    if failures:
+        record["failures"] = list(failures)
+    kodi.append_run(record)
 
 
 def _counts(stats) -> dict:

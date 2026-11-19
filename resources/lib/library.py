@@ -35,17 +35,39 @@ class LibraryClient:
 
     def list_items(self, mediatype: str):
         spec = SPECS[mediatype]
+        return self._paginate(
+            spec.list_method,
+            spec.list_key,
+            mediatype,
+            {"properties": list(spec.properties)},
+        )
+
+    def list_episodes_for_show(self, tvshowid: int, season: int | None = None):
+        spec = SPECS["episode"]
+        params: dict = {
+            "tvshowid": int(tvshowid),
+            "properties": list(spec.properties),
+        }
+        if season is not None:
+            params["season"] = int(season)
+        return self._paginate(spec.list_method, spec.list_key, "episode", params)
+
+    def get_season(self, seasonid: int) -> dict | None:
+        result = self.rpc(
+            "VideoLibrary.GetSeasonDetails",
+            {"seasonid": int(seasonid), "properties": ["season", "tvshowid", "showtitle"]},
+        )
+        payload = result.get("seasondetails")
+        return payload if isinstance(payload, dict) else None
+
+    def _paginate(self, method: str, list_key: str, mediatype: str, base_params: dict):
         start = 0
         items = []
         while True:
-            result = self.rpc(
-                spec.list_method,
-                {
-                    "properties": list(spec.properties),
-                    "limits": {"start": start, "end": start + PAGE_SIZE},
-                },
-            )
-            batch = result.get(spec.list_key) or []
+            params = dict(base_params)
+            params["limits"] = {"start": start, "end": start + PAGE_SIZE}
+            result = self.rpc(method, params)
+            batch = result.get(list_key) or []
             items.extend(item_from_json(mediatype, row) for row in batch if isinstance(row, dict))
             total = (result.get("limits") or {}).get("total")
             start += len(batch)

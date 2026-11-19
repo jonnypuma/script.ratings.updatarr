@@ -9,23 +9,32 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from resources.lib.providers import parse_omdb, parse_tmdb_rating
-
 
 NAMES = {
     "tmdb": "themoviedb",
     "imdb": "imdb",
     "trakt": "trakt",
     "tomatoes": "tomatometerallcritics",
+    "rotten": "tomatometerallcritics",
+    "tomatoesaudience": "tomatometerallaudience",
+    "popcorn": "tomatometerallaudience",
+    "audiencescore": "tomatometerallaudience",
     "metacritic": "metacritic",
+    "letterboxd": "letterboxd",
+    "mal": "mal",
+    "myanimelist": "mal",
 }
-PERCENT = {"tomatoes", "tomatoesaudience", "metacritic"}
+PERCENT = {"tomatoes", "rotten", "tomatoesaudience", "popcorn", "audiencescore", "metacritic"}
 PROPERTY_NAMES = {
     "tmdb_rating": ("themoviedb", "tmdb_votes", 10),
     "imdb_rating": ("imdb", "imdb_votes", 10),
     "trakt_rating": ("trakt", "trakt_votes", 10),
     "rottentomatoes_rating": ("tomatometerallcritics", "", 100),
+    "rottentomatoes_audiencerating": ("tomatometerallaudience", "", 100),
+    "tomatoesaudience_rating": ("tomatometerallaudience", "", 100),
     "metacritic_rating": ("metacritic", "", 100),
+    "letterboxd_rating": ("letterboxd", "letterboxd_votes", 10),
+    "mal_rating": ("mal", "mal_votes", 10),
 }
 
 
@@ -37,11 +46,15 @@ class HelperResult:
 
 
 def ratings_from_tmdb_payload(payload) -> dict:
+    from resources.lib.providers import parse_tmdb_rating
+
     parsed = parse_tmdb_rating(payload)
     return {"themoviedb": parsed} if parsed else {}
 
 
 def ratings_from_omdb_record(record) -> dict:
+    from resources.lib.providers import parse_omdb
+
     if not isinstance(record, dict) or not record:
         return {}
     body = dict(record)
@@ -69,11 +82,20 @@ def ratings_from_mdblist(details) -> dict:
             continue
         source = str(entry.get("source") or "").lower()
         name = NAMES.get(source)
-        value = _number(entry.get("value"))
-        if not name or value is None:
+        if not name:
             continue
-        scale = 100 if source in PERCENT or value > 10 else 10
-        rating = _on_ten(value, scale)
+        value = _number(entry.get("value"))
+        if source == "letterboxd":
+            if value is not None and 0 < value <= 5:
+                rating = _on_ten(value * 2.0, 10)
+            else:
+                score_val = _number(entry.get("score"))
+                rating = _on_ten(score_val, 100) if score_val is not None else _on_ten(value, 10)
+        else:
+            if value is None:
+                continue
+            scale = 100 if source in PERCENT or value > 10 else 10
+            rating = _on_ten(value, scale)
         if rating:
             votes = _votes(entry.get("votes"))
             parsed[name] = {"rating": rating, "votes": votes}

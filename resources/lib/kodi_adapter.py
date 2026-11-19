@@ -23,18 +23,44 @@ LOCK_PROPERTY = "script.ratings.updatarr.running"
 
 class KodiMonitor:
     def __init__(self) -> None:
-        self._monitor = xbmc.Monitor()
+        base = getattr(xbmc, "Monitor", None)
+        if isinstance(base, type):
+            class _Monitor(base):
+                def __init__(self_inner) -> None:
+                    super().__init__()
+                    self_inner.scan_finished = False
+
+                def onScanFinished(self_inner, library: str) -> None:
+                    if str(library or "").lower() == "video":
+                        self_inner.scan_finished = True
+
+            self._monitor = _Monitor()
+        else:
+            self._monitor = base() if callable(base) else None
 
     def wait(self, seconds: float) -> bool:
-        return self._monitor.waitForAbort(max(0.0, float(seconds)))
+        return self._monitor.waitForAbort(max(0.0, float(seconds))) if self._monitor else False
 
     def abort_requested(self) -> bool:
-        return self._monitor.abortRequested()
+        return self._monitor.abortRequested() if self._monitor else False
 
     def pause(self, seconds: float) -> bool:
         if seconds <= 0:
             return self.abort_requested()
         return self.wait(seconds)
+
+    def pop_scan_finished(self) -> bool:
+        if self._monitor is None or not getattr(self._monitor, "scan_finished", False):
+            return False
+        self._monitor.scan_finished = False
+        return True
+
+
+def is_playing_video() -> bool:
+    try:
+        return bool(xbmc.Player().isPlayingVideo())
+    except Exception:
+        return False
 
 
 def addon():
@@ -121,9 +147,11 @@ def load_config() -> Config:
         tmdb_key=_string(current, "tmdb_key"),
         omdb_key=_string(current, "omdb_key"),
         trakt_key=_string(current, "trakt_key"),
+        mdblist_key=_string(current, "mdblist_key"),
         use_tmdb=_bool(current, "use_tmdb", True),
         use_omdb=_bool(current, "use_omdb", False),
         use_trakt=_bool(current, "use_trakt", False),
+        use_mdblist=_bool(current, "use_mdblist", False),
         preferred_default=_string(current, "default_rating") or "keep",
         delay_seconds=_int(current, "delay_ms", 250) / 1000.0,
         save_ids=_bool(current, "save_ids", True),
@@ -135,6 +163,8 @@ def load_config() -> Config:
         update_missing_only=_bool(current, "update_missing_only", False),
         use_tmdbhelper=_bool(current, "use_tmdbhelper", True),
         omdb_daily_limit=_int(current, "omdb_daily_limit", 1000),
+        mdblist_daily_limit=_int(current, "mdblist_daily_limit", 1000),
+        recent_days=_int(current, "recent_days", 0),
         schedule_enabled=_bool(current, "schedule_enabled", False),
         schedule_mode=_string(current, "schedule_mode") or "daily",
         schedule_times=_string(current, "schedule_times") or "03:00",
@@ -143,6 +173,8 @@ def load_config() -> Config:
         manual_background=_bool(current, "manual_background", False),
         schedule_types=tuple(types),
         startup_delay=_int(current, "startup_delay", 120),
+        update_on_scan=_bool(current, "update_on_scan", False),
+        pause_during_playback=_bool(current, "pause_during_playback", True),
     )
 
 
@@ -239,8 +271,14 @@ def read_limits() -> dict:
 def write_limits(state: dict) -> None:
     path = os.path.join(profile_dir(), "limits.json")
     try:
+        payload = {
+            "omdb_day": state.get("omdb_day", ""),
+            "omdb_used": int(state.get("omdb_used") or 0),
+            "mdblist_day": state.get("mdblist_day", ""),
+            "mdblist_used": int(state.get("mdblist_used") or 0),
+        }
         with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"omdb_day": state.get("omdb_day", ""), "omdb_used": int(state.get("omdb_used") or 0)}, handle)
+            json.dump(payload, handle)
     except (OSError, TypeError, ValueError) as exc:
         log(f"Could not store the provider allowance: {exc}", xbmc.LOGWARNING)
 

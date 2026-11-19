@@ -8,7 +8,13 @@ this addon's own request.
 
 from __future__ import annotations
 
-from resources.lib.helper_ratings import HelperResult, ratings_from_tmdb_payload
+from resources.lib.helper_ratings import (
+    HelperResult,
+    ratings_from_mdblist,
+    ratings_from_omdb_record,
+    ratings_from_properties,
+    ratings_from_tmdb_payload,
+)
 from resources.lib.ids import is_imdb, is_numeric_id
 
 
@@ -45,6 +51,16 @@ class HelperBridge:
             self.log(f"TMDbHelper lookup skipped ({exc.__class__.__name__})")
             return result
         result.ratings.update(ratings_from_tmdb_payload(payload))
+        if isinstance(payload, dict):
+            if "ratings" in payload:
+                for key, value in ratings_from_mdblist(payload).items():
+                    result.ratings.setdefault(key, value)
+            if isinstance(payload.get("omdb"), dict):
+                for key, value in ratings_from_omdb_record(payload["omdb"]).items():
+                    result.ratings.setdefault(key, value)
+            if isinstance(payload.get("infoproperties"), dict):
+                for key, value in ratings_from_properties(payload["infoproperties"]).items():
+                    result.ratings.setdefault(key, value)
         result.ids.update(_ids_from_tmdb(payload, kind))
         return result
 
@@ -60,7 +76,7 @@ def _ids_from_tmdb(payload, kind: str) -> dict:
         return {}
     ext = payload.get("external_ids") if isinstance(payload.get("external_ids"), dict) else {}
     found = {}
-    imdb = payload.get("imdb_id") if kind == "movie" else ext.get("imdb_id")
+    imdb = (payload.get("imdb_id") if kind == "movie" else None) or ext.get("imdb_id")
     if is_imdb(str(imdb or "")):
         found["imdb"] = str(imdb)
     tvdb = ext.get("tvdb_id")

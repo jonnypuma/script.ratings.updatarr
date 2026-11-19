@@ -6,8 +6,9 @@ import urllib.parse
 from dataclasses import dataclass, field
 
 from resources.lib.config import Config
+from resources.lib.helper_ratings import ratings_from_mdblist
 from resources.lib.httpclient import HttpStatus
-from resources.lib.ids import imdb_id, is_imdb, is_numeric_id, tmdb_id, tvdb_id
+from resources.lib.ids import imdb_id, is_imdb, is_numeric_id, new_uniqueids, tmdb_id, tvdb_id
 from resources.lib.limits import DailyQuota, RunCancelled
 from resources.lib.media import LibraryItem
 
@@ -17,6 +18,12 @@ TMDB_BASE = "https://api.themoviedb.org/3"
 # The same page documents HTTPS. A free key allows 1,000 requests a day.
 OMDB_URL = "https://www.omdbapi.com/"
 TRAKT_BASE = "https://api.trakt.tv"
+MDBLIST_URL = "https://api.mdblist.com/"
+
+QUOTA_PROVIDERS = {
+    "omdb": ("use_omdb", "OMDb"),
+    "mdblist": ("use_mdblist", "MDbList"),
+}
 
 
 class AuthError(Exception):
@@ -87,6 +94,31 @@ def parse_trakt(payload) -> dict | None:
     if rating <= 0 or rating > 10 or votes <= 0:
         return None
     return {"rating": float(round(rating, 3)), "votes": votes}
+
+
+def parse_mdblist(payload) -> tuple[dict, dict]:
+    if not isinstance(payload, dict):
+        return {}, {}
+    if payload.get("response") is False:
+        error = str(payload.get("error") or "")
+        lowered = error.lower()
+        if "key" in lowered or "invalid" in lowered:
+            raise AuthError("mdblist")
+        if "limit" in lowered or "reached" in lowered:
+            raise HttpStatus(429, error or "MDbList request limit reached")
+        return {}, {}
+    ratings = ratings_from_mdblist(payload)
+    discovered: dict[str, str] = {}
+    imdb = str(payload.get("imdbid") or "")
+    if is_imdb(imdb):
+        discovered["imdb"] = imdb
+    tmdb = payload.get("tmdbid")
+    if is_numeric_id(str(tmdb or "")):
+        discovered["tmdb"] = str(int(tmdb))
+    tvdb = payload.get("tvdbid")
+    if is_numeric_id(str(tvdb or "")):
+        discovered["tvdb"] = str(int(tvdb))
+    return ratings, discovered
 
 
 def _score(value) -> float | None:
@@ -162,6 +194,25 @@ class SourceClient:
                 found_imdb = result.discovered_ids.get("imdb", "")
                 if found_imdb:
                     imdb = imdb or found_imdb
+        tvdb = tvdb_id(item.uniqueids) or result.discovered_ids.get("tvdb", "")
+        if self.config.mdblist_active and (imdb or tmdb or (kind == "tv" and tvdb)):
+            found_mdb = self._guard(
+                result,
+                "mdblist",
+                self._mdblist_ratings,
+                kind,
+                imdb,
+                tmdb,
+                tvdb if kind == "tv" else "",
+            )
+            if isinstance(found_mdb, tuple):
+                parsed_mdb, found_ids = found_mdb
+                for key, value in found_ids.items():
+                    result.discovered_ids.setdefault(key, value)
+                imdb = imdb or found_ids.get("imdb", "")
+                tmdb = tmdb or found_ids.get("tmdb", "")
+                for key, value in parsed_mdb.items():
+                    result.ratings.setdefault(key, value)
         local = self._local_rating(imdb)
         if local:
             result.ratings["imdb"] = local
@@ -170,11 +221,24 @@ class SourceClient:
             if isinstance(parsed, dict):
                 if result.ratings.get("imdb"):
                     parsed.pop("imdb", None)
-                result.ratings.update(parsed)
-        if self.config.trakt_active and "trakt" not in result.ratings and (imdb or tmdb):
-            parsed = self._guard(result, "trakt", self._trakt_title, kind, imdb, tmdb)
-            if isinstance(parsed, dict):
-                result.ratings["trakt"] = parsed
+                for key, value in parsed.items():
+                    result.ratings.setdefault(key, value)
+        if self.config.trakt_active and "trakt" not in result.ratings and (imdb or tmdb or (kind == "tv" and tvdb)):
+            trakt_out = self._guard(
+                result,
+                "trakt",
+                self._trakt_title,
+                kind,
+                imdb,
+                tmdb,
+                tvdb if kind == "tv" else "",
+            )
+            if isinstance(trakt_out, tuple):
+                parsed, found_imdb = trakt_out
+                if found_imdb and is_imdb(found_imdb):
+                    result.discovered_ids.setdefault("imdb", found_imdb)
+                if isinstance(parsed, dict):
+                    result.ratings["trakt"] = parsed
         return result
 
     def _episode(self, item: LibraryItem, show: LibraryItem | None) -> FetchResult:
@@ -182,8 +246,7 @@ class SourceClient:
         show_tmdb = ""
         show_imdb = ""
         if show is not None:
-            show_tmdb, _show_ids = self._resolve_tmdb(show, "tv", False, result)
-            show_imdb = imdb_id(show.uniqueids, show.imdbnumber)
+            show_tmdb, show_imdb = self._resolve_show_ids(show, result)
         episode_imdb = imdb_id(item.uniqueids, "")
         episode_imdb = self._apply_helper(result, "episode", show_tmdb, episode_imdb, item.season, item.episode) or episode_imdb
         if (
@@ -224,12 +287,20 @@ class SourceClient:
             local = self._local_rating(episode_imdb)
             if local:
                 result.ratings["imdb"] = local
+        if self.config.mdblist_active and episode_imdb:
+            found_mdb = self._guard(result, "mdblist", self._mdblist_ratings, "episode", episode_imdb, "", "")
+            if isinstance(found_mdb, tuple):
+                parsed_mdb, _found_ids = found_mdb
+                for key, value in parsed_mdb.items():
+                    if key != "imdb" or "imdb" not in result.ratings:
+                        result.ratings.setdefault(key, value)
         if self._needs_omdb(result, episode_imdb):
             parsed = self._guard(result, "omdb", self._omdb_ratings, episode_imdb)
             if isinstance(parsed, dict):
                 if result.ratings.get("imdb"):
                     parsed.pop("imdb", None)
-                result.ratings.update(parsed)
+                for key, value in parsed.items():
+                    result.ratings.setdefault(key, value)
         if (
             self.config.trakt_active
             and "trakt" not in result.ratings
@@ -250,6 +321,50 @@ class SourceClient:
                 result.ratings["trakt"] = parsed
         return result
 
+    def _resolve_show_ids(self, show: LibraryItem, result: FetchResult) -> tuple[str, str]:
+        show_tmdb, show_discovered = self._resolve_tmdb(show, "tv", False, result)
+        show_imdb = imdb_id(show.uniqueids, show.imdbnumber)
+        if not show_imdb and show_tmdb:
+            if self.helper is not None and getattr(self.config, "use_tmdbhelper", True):
+                try:
+                    found = self.helper.lookup(kind="tv", tmdb=show_tmdb)
+                    helper_ids = getattr(found, "ids", {}) or {}
+                    if is_imdb(str(helper_ids.get("imdb") or "")):
+                        show_imdb = str(helper_ids["imdb"])
+                except RunCancelled:
+                    raise
+                except Exception:
+                    pass
+            if not show_imdb and self.config.tmdb_active:
+                payload = self._guard(result, "tmdb", self._tmdb_details, show_tmdb, "tv")
+                if isinstance(payload, dict):
+                    ext = _external_ids(payload, "tv")
+                    show_discovered.update(ext)
+                    show_imdb = ext.get("imdb", "")
+            if not show_imdb and self.config.trakt_active:
+                trakt_found = self._guard(result, "trakt", self._trakt_lookup, "tmdb", show_tmdb, "show")
+                if isinstance(trakt_found, tuple) and is_imdb(trakt_found[1]):
+                    show_imdb = trakt_found[1]
+        if show_imdb:
+            show_discovered.setdefault("imdb", show_imdb)
+        fresh = new_uniqueids(show.uniqueids, show_discovered)
+        if fresh:
+            show.uniqueids.update(fresh)
+        return show_tmdb, show_imdb
+
+    def _helper_allows(self, key: str) -> bool:
+        if key == "themoviedb":
+            return self.config.use_tmdb
+        if key == "imdb":
+            return self.config.use_imdb_data or self.config.use_omdb or self.config.use_mdblist
+        if key == "trakt":
+            return self.config.use_trakt or self.config.use_mdblist
+        if key in {"tomatometerallcritics", "metacritic"}:
+            return self.config.use_omdb or self.config.use_mdblist
+        if key in {"tomatometerallaudience", "letterboxd", "mal"}:
+            return self.config.use_mdblist
+        return False
+
     def _apply_helper(self, result: FetchResult, kind: str, tmdb: str, imdb: str, season: int | None = None, episode: int | None = None) -> str:
         if self.helper is None or not getattr(self.config, "use_tmdbhelper", True):
             return imdb
@@ -264,7 +379,7 @@ class SourceClient:
         if getattr(found, "requested", False):
             result.requested = True
         for key, value in ratings.items():
-            if key not in result.ratings and isinstance(value, dict) and value.get("rating"):
+            if self._helper_allows(key) and key not in result.ratings and isinstance(value, dict) and value.get("rating"):
                 result.ratings[key] = value
         for key, value in ids.items():
             if value:
@@ -319,9 +434,10 @@ class SourceClient:
         except RunCancelled:
             raise
         except DailyQuota as exc:
-            if exc.provider == "omdb":
-                self.config.use_omdb = False
-                result.errors.append("omdb: daily allowance is used, so OMDb is off for the rest of this run")
+            if exc.provider in QUOTA_PROVIDERS:
+                attr, label = QUOTA_PROVIDERS[exc.provider]
+                setattr(self.config, attr, False)
+                result.errors.append(f"{exc.provider}: daily allowance is used, so {label} is off for the rest of this run")
             else:
                 result.errors.append(f"{exc.provider}: the provider limit was reached")
             return None
@@ -330,12 +446,13 @@ class SourceClient:
                 raise AuthError(provider) from exc
             if exc.status == 404:
                 return None
-            if exc.status == 429 and provider == "omdb":
-                self.config.use_omdb = False
+            if exc.status == 429 and provider in QUOTA_PROVIDERS:
+                attr, label = QUOTA_PROVIDERS[provider]
+                setattr(self.config, attr, False)
                 limiter = getattr(self.transport, "limiter", None)
                 if limiter is not None:
-                    limiter.exhaust("omdb")
-                result.errors.append("omdb: request limit reached; OMDb is off for the rest of this run")
+                    limiter.exhaust(provider)
+                result.errors.append(f"{provider}: request limit reached; {label} is off for the rest of this run")
                 return None
             if exc.status == 429:
                 result.errors.append(f"{provider}: rate limit reached")
@@ -392,6 +509,23 @@ class SourceClient:
             return {}
         return parse_omdb(payload)
 
+    def _mdblist_ratings(self, kind: str, imdb: str, tmdb: str, tvdb: str) -> tuple[dict, dict]:
+        params = {"apikey": self.config.mdblist_key}
+        media_kind = "show" if kind == "tv" else "movie"
+        if imdb:
+            params["i"] = imdb
+        elif tmdb:
+            params["tm"] = tmdb
+            params["m"] = media_kind
+        elif tvdb and kind == "tv":
+            params["tv"] = tvdb
+            params["m"] = "show"
+        else:
+            return {}, {}
+        query = urllib.parse.urlencode(params)
+        payload = self._get(f"{MDBLIST_URL}?{query}")
+        return parse_mdblist(payload)
+
     def _trakt_headers(self) -> dict[str, str]:
         return {
             "trakt-api-version": "2",
@@ -399,14 +533,19 @@ class SourceClient:
             "Content-Type": "application/json",
         }
 
-    def _trakt_title(self, kind: str, imdb: str, tmdb: str):
+    def _trakt_title(self, kind: str, imdb: str, tmdb: str, tvdb: str = "") -> tuple[dict | None, str]:
         slug = "movies" if kind == "movie" else "shows"
         search_type = "movie" if kind == "movie" else "show"
-        key = imdb or self._trakt_key_from_tmdb(tmdb, search_type)
+        found_imdb = ""
+        key = imdb
+        if not key and tmdb:
+            key, found_imdb = self._trakt_lookup("tmdb", tmdb, search_type)
+        if not key and tvdb and kind == "tv":
+            key, found_imdb = self._trakt_lookup("tvdb", tvdb, "show")
         if not key:
-            return None
+            return None, found_imdb
         payload = self._get(f"{TRAKT_BASE}/{slug}/{urllib.parse.quote(str(key), safe='')}/ratings", self._trakt_headers())
-        return parse_trakt(payload)
+        return parse_trakt(payload), found_imdb
 
     def _trakt_episode(self, show_imdb: str, show_tmdb: str, season: int, episode: int):
         key = show_imdb or self._trakt_key_from_tmdb(show_tmdb, "show")
@@ -438,22 +577,27 @@ class SourceClient:
             return None
         return found if isinstance(found, dict) else None
 
-    def _trakt_key_from_tmdb(self, tmdb: str, search_type: str) -> str:
-        if not tmdb:
-            return ""
+    def _trakt_lookup(self, source: str, ext_id: str, search_type: str) -> tuple[str, str]:
+        if not ext_id:
+            return "", ""
         payload = self._get(
-            f"{TRAKT_BASE}/search/tmdb/{urllib.parse.quote(str(tmdb), safe='')}?type={search_type}",
+            f"{TRAKT_BASE}/search/{source}/{urllib.parse.quote(str(ext_id), safe='')}?type={search_type}",
             self._trakt_headers(),
         )
         if not isinstance(payload, list) or not payload:
-            return ""
+            return "", ""
         media = payload[0].get(search_type) or {}
         ids = media.get("ids") or {}
-        if ids.get("imdb"):
-            return str(ids["imdb"])
+        found_imdb = str(ids.get("imdb") or "")
+        if found_imdb:
+            return found_imdb, found_imdb
         if ids.get("trakt"):
-            return str(ids["trakt"])
-        return ""
+            return str(ids["trakt"]), ""
+        return "", ""
+
+    def _trakt_key_from_tmdb(self, tmdb: str, search_type: str) -> str:
+        key, _found_imdb = self._trakt_lookup("tmdb", tmdb, search_type)
+        return key
 
 
 def _external_ids(payload: dict, kind: str) -> dict[str, str]:

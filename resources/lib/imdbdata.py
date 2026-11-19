@@ -43,36 +43,51 @@ class DatasetCancelled(Exception):
     """The user or Kodi stopped the download before the new index replaced the old one."""
 
 
-def build_index(ratings_path: str, episodes_path: str, target: str, should_stop=None) -> dict[str, int]:
+def build_index(ratings_path: str, episodes_path: str, target: str, should_stop=None, progress=None) -> dict[str, int]:
     """Create a new index from the two dataset files. ``target`` is replaced only on success."""
     temporary = target + ".new"
     _remove(temporary)
     connection = sqlite3.connect(temporary)
     try:
         connection.executescript(
-            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-200000;"
+            "PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-200000; "
+            "PRAGMA temp_store=MEMORY; PRAGMA locking_mode=EXCLUSIVE;"
             "CREATE TABLE ratings (t INTEGER PRIMARY KEY, r INTEGER NOT NULL, v INTEGER NOT NULL);"
             "CREATE TABLE episodes ("
-            "parent INTEGER NOT NULL, season INTEGER NOT NULL, number INTEGER NOT NULL, t INTEGER NOT NULL, "
-            "PRIMARY KEY (parent, season, number));"
+            "parent INTEGER NOT NULL, season INTEGER NOT NULL, number INTEGER NOT NULL, t INTEGER NOT NULL);"
             "CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);"
         )
         connection.execute("INSERT INTO meta VALUES ('schema', ?)", (str(SCHEMA),))
-        counts = {
-            "ratings": _insert(
-                connection,
-                "INSERT OR REPLACE INTO ratings VALUES (?, ?, ?)",
-                _rating_rows(ratings_path),
-                should_stop,
-            ),
-            "episodes": _insert(
-                connection,
-                "INSERT OR IGNORE INTO episodes VALUES (?, ?, ?, ?)",
-                _episode_rows(episodes_path),
-                should_stop,
-            ),
-        }
+
+        def on_ratings_batch(done: int) -> None:
+            if progress:
+                pct = min(58, 50 + int(done * 8 / 1_800_000))
+                progress(pct, f"Indexing IMDb ratings ({done:,})")
+
+        def on_episodes_batch(done: int) -> None:
+            if progress:
+                pct = min(95, 58 + int(done * 37 / 8_000_000))
+                progress(pct, f"Indexing IMDb episodes ({done:,})")
+
+        ratings_count = _insert(
+            connection,
+            "INSERT OR REPLACE INTO ratings VALUES (?, ?, ?)",
+            _rating_rows(ratings_path),
+            should_stop,
+            on_batch=on_ratings_batch,
+        )
+        episodes_count = _insert(
+            connection,
+            "INSERT INTO episodes VALUES (?, ?, ?, ?)",
+            _episode_rows(episodes_path),
+            should_stop,
+            on_batch=on_episodes_batch,
+        )
+        if progress:
+            progress(96, "Building IMDb episode index")
+        connection.execute("CREATE INDEX idx_episodes_parent_season_num ON episodes (parent, season, number)")
         connection.commit()
+        counts = {"ratings": ratings_count, "episodes": episodes_count}
     except DatasetCancelled:
         connection.close()
         _remove(temporary)
@@ -141,7 +156,7 @@ class ImdbData:
             return True
         return moment - marker >= int(days) * 86400
 
-    def refresh(self, days: int = 30, report=None, should_stop=None, force: bool = False) -> dict:
+    def refresh(self, days: int = 30, report=None, should_stop=None, force: bool = False, progress=None) -> dict:
         report = report or (lambda _message: None)
         os.makedirs(self.folder, exist_ok=True)
         self._close()
@@ -154,6 +169,8 @@ class ImdbData:
                 if should_stop and should_stop():
                     raise DatasetCancelled()
                 report("Checking IMDb for new rating files")
+                if progress:
+                    progress(0, "Checking IMDb for new rating files")
                 remote = self._remote_stamps()
                 previous = self._meta().get("stamps")
                 if remote and not sources and previous == json.dumps(remote, sort_keys=True) and self.ready():
@@ -162,18 +179,27 @@ class ImdbData:
                 free = shutil.disk_usage(self.folder).free
                 if free < FREE_BYTES:
                     raise DatasetError("Less than 800 MB is free, which the IMDb download and index need")
-                for name in FILES:
+                for index, name in enumerate(FILES):
                     if name in sources:
                         continue
-                    path, stamp = self._download(name, report, should_stop)
+                    path, stamp = self._download(
+                        name,
+                        report,
+                        should_stop,
+                        progress=progress,
+                        base_pct=index * 25,
+                        span_pct=25,
+                    )
                     sources[name] = path
                     downloaded.append(path)
                     stamps[name] = stamp or remote.get(name, "")
             for name, path in sources.items():
                 stamps.setdefault(name, _file_stamp(path))
             report("Indexing IMDb ratings")
+            if progress:
+                progress(50, "Indexing IMDb ratings")
             self._close()
-            counts = build_index(sources[RATINGS], sources[EPISODES], self.index_path, should_stop)
+            counts = build_index(sources[RATINGS], sources[EPISODES], self.index_path, should_stop, progress=progress)
             self._write_meta(
                 schema=SCHEMA,
                 built_at=int(time.time()),
@@ -212,7 +238,7 @@ class ImdbData:
         except Exception:
             return
 
-    def _download(self, name: str, report, should_stop) -> tuple[str, str]:
+    def _download(self, name: str, report, should_stop, progress=None, base_pct: int = 0, span_pct: int = 25) -> tuple[str, str]:
         target = os.path.join(self.folder, name)
         partial = target + ".part"
         cap = MAX_BYTES[name]
@@ -241,7 +267,11 @@ class ImdbData:
                         if written > cap:
                             raise DatasetError(f"{name} is far larger than expected; the download was stopped")
                         handle.write(chunk)
-                        report(f"Downloading {name} ({written // 2**20} MB)")
+                        msg = f"Downloading {name} ({written // 2**20} MB)"
+                        report(msg)
+                        if progress:
+                            pct = base_pct + (int(written * span_pct / expected) if expected > 0 else 0)
+                            progress(min(base_pct + span_pct, pct), msg)
                 stamp = _header_stamp(headers)
             if expected and written != expected:
                 raise DatasetError(f"The download of {name} was cut short")
@@ -337,6 +367,7 @@ class ImdbData:
         self._write_meta(checked_at=int(time.time()))
 
     def _write_meta(self, **values) -> None:
+        self._close()
         connection = sqlite3.connect(self.index_path, timeout=10)
         try:
             connection.executemany(
@@ -346,7 +377,6 @@ class ImdbData:
             connection.commit()
         finally:
             connection.close()
-        self._close()
 
     def _state(self) -> dict:
         try:
@@ -410,8 +440,8 @@ def _columns(header: str, wanted: tuple[str, ...], name: str) -> list[int]:
         raise DatasetError(f"IMDb changed the layout of {name}") from exc
 
 
-def _insert(connection, sql: str, rows, should_stop, batch: int = 20000) -> int:
-    total, chunk = 0, []
+def _insert(connection, sql: str, rows, should_stop, batch: int = 20000, on_batch=None) -> int:
+    total, chunk, batches = 0, [], 0
     for row in rows:
         chunk.append(row)
         if len(chunk) >= batch:
@@ -420,9 +450,14 @@ def _insert(connection, sql: str, rows, should_stop, batch: int = 20000) -> int:
             connection.executemany(sql, chunk)
             total += len(chunk)
             chunk = []
+            batches += 1
+            if on_batch and batches % 5 == 0:
+                on_batch(total)
     if chunk:
         connection.executemany(sql, chunk)
         total += len(chunk)
+        if on_batch:
+            on_batch(total)
     return total
 
 

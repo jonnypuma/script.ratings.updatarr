@@ -13,6 +13,7 @@ import urllib.error
 from datetime import datetime, timedelta, timezone
 from email.message import Message
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -25,7 +26,7 @@ from resources.lib.ids import imdb_id, new_uniqueids, tmdb_id
 from resources.lib.library import JsonRpcError, LibraryClient, parse_rpc_payload
 from resources.lib.media import LibraryItem, details_params
 from resources.lib.params import is_truthy, parse_media_types, parse_params
-from resources.lib.providers import AuthError, SourceClient, parse_omdb, parse_tmdb_rating, parse_trakt
+from resources.lib.providers import AuthError, SourceClient, parse_mdblist, parse_omdb, parse_tmdb_rating, parse_trakt
 from resources.lib.ratings import build_rating_update
 from resources.lib.schedule import daily_due, is_due, parse_times
 from resources.lib.updater import update_items, update_types
@@ -749,6 +750,10 @@ class PackageTests(unittest.TestCase):
         self.assertIn("action=refreshimdb", settings)
         self.assertIn('id="omdb_key"', settings)
         self.assertIn('id="trakt_key"', settings)
+        self.assertIn('id="mdblist_key"', settings)
+        self.assertIn('id="recent_days"', settings)
+        self.assertIn('id="update_on_scan"', settings)
+        self.assertIn('id="pause_during_playback"', settings)
         for name in ("default.py", "context_item.py", "service.py", "resources/settings.xml", "icon.png", "fanart.png"):
             self.assertTrue((ROOT / name).is_file(), name)
 
@@ -758,6 +763,315 @@ class PackageTests(unittest.TestCase):
         blob = "\n".join(path.read_text(encoding="utf-8") for path in ROOT.rglob("*") if path.suffix in {".py", ".xml"})
         used = set(__import__("re").findall(r"\b(32\d{3})\b", blob))
         self.assertFalse(used - defined, sorted(used - defined))
+
+
+class ImprovementsAndFixesTests(unittest.TestCase):
+    def test_any_active_respects_tmdbhelper_availability(self):
+        cfg = Config(use_imdb_data=False, use_tmdb=True, tmdb_key="", use_tmdbhelper=True)
+        self.assertFalse(cfg.any_active(tmdbhelper_available=False))
+        self.assertTrue(cfg.any_active(tmdbhelper_available=True))
+        all_off = Config(use_imdb_data=False, use_tmdb=False, use_omdb=False, use_trakt=False, use_mdblist=False, use_tmdbhelper=True)
+        self.assertFalse(all_off.any_active(tmdbhelper_available=True))
+
+    def test_apply_helper_respects_disabled_use_tmdb(self):
+        from resources.lib.helper_ratings import HelperResult
+
+        class Helper:
+            def lookup(self, **kwargs):
+                return HelperResult(
+                    ratings={
+                        "themoviedb": {"rating": 7.5, "votes": 20},
+                        "imdb": {"rating": 8.2, "votes": 50},
+                    },
+                    ids={"imdb": "tt15"},
+                )
+
+        item = movie(uniqueids={"tmdb": "9"})
+        cfg = Config(use_tmdb=False, use_imdb_data=True, use_tmdbhelper=True)
+        result = SourceClient(cfg, MapTransport([]), helper=Helper()).ratings_for(item)
+        self.assertNotIn("themoviedb", result.ratings)
+        self.assertEqual(result.ratings["imdb"]["rating"], 8.2)
+        self.assertEqual(result.discovered_ids["imdb"], "tt15")
+
+    def test_helper_bridge_reads_cached_omdb_mdblist_and_properties(self):
+        from resources.lib.helper_kodi import HelperBridge
+
+        class FakeApi:
+            append_to_response = "external_ids"
+
+            def get_request_lc(self, *args, **kwargs):
+                return {
+                    "vote_average": 7.8,
+                    "vote_count": 200,
+                    "external_ids": {"imdb_id": "tt0123456"},
+                    "omdb": {"Response": "True", "tomatoMeter": "92", "Metascore": "81"},
+                    "ratings": [
+                        {"source": "tomatoesaudience", "value": 88, "votes": 500},
+                        {"source": "letterboxd", "value": 4.1, "votes": 1000},
+                    ],
+                    "infoproperties": {"trakt_rating": "8.0", "trakt_votes": "450"},
+                }
+
+        res = HelperBridge(FakeApi(), lambda _m: None).lookup(kind="movie", tmdb="550")
+        self.assertEqual(res.ratings["themoviedb"]["rating"], 7.8)
+        self.assertEqual(res.ratings["tomatometerallcritics"]["rating"], 9.2)
+        self.assertEqual(res.ratings["metacritic"]["rating"], 8.1)
+        self.assertEqual(res.ratings["tomatometerallaudience"]["rating"], 8.8)
+        self.assertEqual(res.ratings["letterboxd"]["rating"], 8.2)
+        self.assertEqual(res.ratings["trakt"]["rating"], 8.0)
+        self.assertEqual(res.ids["imdb"], "tt0123456")
+
+    def test_episode_resolves_parent_show_imdb_via_tmdb_and_saves_show_ids(self):
+        class FakeIndex:
+            def episode(self, show_imdb, season, number):
+                if show_imdb == "tt999":
+                    return {"imdb": "tt1001", "rating": {"rating": 8.9, "votes": 120}}
+                return None
+
+            def rating(self, imdb):
+                return None
+
+        transport = MapTransport(
+            [
+                (
+                    "/tv/100?",
+                    {"id": 100, "external_ids": {"imdb_id": "tt999", "tvdb_id": 777}},
+                ),
+                (
+                    "/tv/100/season/1/episode/2",
+                    {"id": 555, "vote_average": 8.5, "vote_count": 40, "external_ids": {}},
+                ),
+            ]
+        )
+        show = LibraryItem(mediatype="tvshow", dbid=4, title="Show", uniqueids={"tmdb": "100"})
+        episode = LibraryItem(
+            mediatype="episode",
+            dbid=8,
+            title="Ep 2",
+            showtitle="Show",
+            season=1,
+            episode=2,
+            tvshowid=4,
+        )
+        library = FakeLibrary([show, episode])
+        config = Config(tmdb_key="k", use_tmdb=True, use_imdb_data=True, delay_seconds=0)
+        sources = SourceClient(config, transport, imdb=FakeIndex())
+        stats = update_items([episode], {4: show}, library, sources, config)
+        self.assertEqual(stats.updated, 1)
+        # First applied call saves discovered IDs on the parent show, second updates the episode
+        show_apply = [call for call in library.applied if call[0].dbid == 4]
+        ep_apply = [call for call in library.applied if call[0].dbid == 8]
+        self.assertEqual(len(show_apply), 1)
+        self.assertEqual(show_apply[0][2], {"imdb": "tt999", "tvdb": "777"})
+        self.assertEqual(ep_apply[0][1]["imdb"]["rating"], 8.9)
+        self.assertEqual(ep_apply[0][2]["imdb"], "tt1001")
+
+    def test_mdblist_parsing_lookup_and_daily_quota(self):
+        from resources.lib.limits import DailyQuota, Limiter, PacedTransport
+
+        ratings, ids = parse_mdblist(
+            {
+                "imdbid": "tt0137523",
+                "tmdbid": 550,
+                "tvdbid": None,
+                "ratings": [
+                    {"source": "imdb", "value": 8.8, "votes": 2300000},
+                    {"source": "tomatoes", "value": 79, "votes": 180},
+                    {"source": "tomatoesaudience", "value": 96, "votes": 100000},
+                    {"source": "metacritic", "value": 67},
+                    {"source": "letterboxd", "value": 4.3, "score": 86, "votes": 900000},
+                    {"source": "mal", "value": 8.5, "votes": 50000},
+                    {"source": "trakt", "value": 8.6, "votes": 40000},
+                ],
+            }
+        )
+        self.assertEqual(ids, {"imdb": "tt0137523", "tmdb": "550"})
+        self.assertEqual(ratings["tomatometerallcritics"]["rating"], 7.9)
+        self.assertEqual(ratings["tomatometerallaudience"]["rating"], 9.6)
+        self.assertEqual(ratings["letterboxd"]["rating"], 8.6)
+        self.assertEqual(ratings["mal"]["rating"], 8.5)
+        self.assertEqual(ratings["trakt"]["rating"], 8.6)
+
+        with self.assertRaises(AuthError):
+            parse_mdblist({"response": False, "error": "Invalid API key"})
+
+        now = {"at": 1_700_000_000.0}
+        limiter = Limiter(mdblist_daily=1, clock=lambda: now["at"])
+        limiter.observe("mdblist")
+        with self.assertRaises(DailyQuota) as caught:
+            limiter.wait_for("mdblist")
+        self.assertEqual(caught.exception.provider, "mdblist")
+
+        # Integration with SourceClient: MDbList fills RT/Metacritic/Trakt so OMDb/Trakt are skipped
+        transport = MapTransport(
+            [
+                (
+                    "api.mdblist.com",
+                    {
+                        "imdbid": "tt1",
+                        "tmdbid": 550,
+                        "ratings": [
+                            {"source": "tomatoes", "value": 80, "votes": 10},
+                            {"source": "tomatoesaudience", "value": 90, "votes": 20},
+                            {"source": "metacritic", "value": 75, "votes": 5},
+                            {"source": "trakt", "value": 8.1, "votes": 100},
+                        ],
+                    },
+                )
+            ]
+        )
+        cfg = Config(use_tmdb=False, use_imdb_data=False, use_mdblist=True, mdblist_key="m", use_omdb=True, omdb_key="o", use_trakt=True, trakt_key="t")
+        res = SourceClient(cfg, transport).ratings_for(movie(uniqueids={"imdb": "tt1"}))
+        self.assertEqual(len(transport.urls), 1)
+        self.assertIn("api.mdblist.com", transport.urls[0])
+        self.assertEqual(res.ratings["tomatometerallaudience"]["rating"], 9.0)
+
+    def test_recent_days_filter_and_quota_prioritization(self):
+        now = datetime(2026, 11, 19, 12, 0, 0)
+        old_show = LibraryItem(mediatype="tvshow", dbid=10, title="Old Show", uniqueids={"imdb": "ttOLD"}, dateadded="2025-01-01 00:00:00")
+        recent_ep = LibraryItem(mediatype="episode", dbid=20, title="New Ep", tvshowid=10, season=1, episode=1, dateadded="2026-11-18 10:00:00")
+        old_ep = LibraryItem(mediatype="episode", dbid=21, title="Old Ep", tvshowid=10, season=1, episode=2, dateadded="2025-01-01 00:00:00")
+        seen_parents = []
+
+        class EpSource:
+            def ratings_for(self, item, show=None):
+                seen_parents.append((item.dbid, show.dbid if show else None))
+                return Fetch(ratings={"imdb": {"rating": 8.0, "votes": 10}})
+
+        cfg = Config(recent_days=7, delay_seconds=0, use_imdb_data=True)
+        stats = update_types(["episode"], FakeLibrary([old_show, recent_ep, old_ep]), EpSource(), cfg, now=now)
+        self.assertEqual(stats.updated, 1)
+        # Old parent show was still passed to recent_ep even though recent_days filtered episodes
+        self.assertEqual(seen_parents, [(20, 10)])
+
+        # Quota prioritization places items missing OMDb ratings ahead of items that already have them
+        already = movie(
+            dbid=1,
+            uniqueids={"imdb": "tt1"},
+            ratings={
+                "tomatometerallcritics": {"rating": 8.0, "votes": 1, "default": False},
+                "metacritic": {"rating": 7.0, "votes": 1, "default": False},
+            },
+        )
+        missing_rt = movie(dbid=2, uniqueids={"imdb": "tt2"}, ratings={"imdb": {"rating": 7.5, "votes": 10, "default": True}})
+        order = []
+
+        class TrackSource:
+            def ratings_for(self, item, show=None):
+                order.append(item.dbid)
+                return Fetch()
+
+        cfg_omdb = Config(use_omdb=True, omdb_key="o", use_tmdb=False, use_imdb_data=False, delay_seconds=0)
+        update_types(["movie"], FakeLibrary([already, missing_rt]), TrackSource(), cfg_omdb)
+        self.assertEqual(order, [2, 1])
+
+    def test_library_episodes_for_show_and_get_season(self):
+        calls = []
+
+        def rpc(method, params):
+            calls.append((method, params))
+            if method == "VideoLibrary.GetSeasonDetails":
+                return {"seasondetails": {"season": 2, "tvshowid": 4, "showtitle": "Show"}}
+            return {"episodes": [{"episodeid": 9, "title": "S2E1", "season": 2, "episode": 1, "tvshowid": 4}], "limits": {"total": 1}}
+
+        client = LibraryClient(rpc)
+        details = client.get_season(15)
+        self.assertEqual(details["season"], 2)
+        eps = client.list_episodes_for_show(4, season=2)
+        self.assertEqual(len(eps), 1)
+        self.assertEqual(eps[0].dbid, 9)
+        self.assertEqual(calls[1][1]["tvshowid"], 4)
+        self.assertEqual(calls[1][1]["season"], 2)
+
+    def test_failures_persisted_and_cancelled_schedule_skips_last_run(self):
+        import types
+
+        for name in ("xbmc", "xbmcaddon", "xbmcgui", "xbmcvfs"):
+            sys.modules.setdefault(name, types.ModuleType(name))
+        from resources.lib import entry
+
+        stored = []
+        shown_text = {}
+        stats = types.SimpleNamespace(
+            stopped="",
+            cancelled=False,
+            total_seen=2,
+            updated=1,
+            unchanged=0,
+            skipped=0,
+            failed=1,
+            failures=["Movie A: HTTP 500"],
+        )
+        with (
+            mock.patch.object(entry.kodi, "text", side_effect=lambda sid, **kw: str(sid)),
+            mock.patch.object(entry.kodi, "log"),
+            mock.patch.object(entry.kodi, "append_run", side_effect=stored.append),
+            mock.patch.object(entry.kodi, "show_summary"),
+        ):
+            entry._announce(stats, ["movie"], False, False)
+        self.assertEqual(stored[0]["failures"], ["Movie A: HTTP 500"])
+
+        with (
+            mock.patch.object(entry.kodi, "read_runs", return_value=stored),
+            mock.patch.object(entry.kodi, "text", return_value="Recent runs"),
+            mock.patch.object(entry.kodi, "show_text", side_effect=lambda h, b: shown_text.update(body=b)),
+        ):
+            entry.show_runs()
+        self.assertIn("Movie A: HTTP 500", shown_text["body"])
+
+        # Cancelled scheduled run does not advance last_run
+        cancelled_stats = types.SimpleNamespace(
+            stopped="",
+            cancelled=True,
+            total_seen=1,
+            updated=0,
+            unchanged=0,
+            skipped=0,
+            failed=0,
+            failures=[],
+        )
+        with (
+            mock.patch.object(entry.kodi, "load_config", return_value=Config(use_imdb_data=True)),
+            mock.patch.object(entry.kodi, "try_lock", return_value=True),
+            mock.patch.object(entry.kodi, "unlock"),
+            mock.patch.object(entry.kodi, "KodiMonitor", return_value=mock.MagicMock()),
+            mock.patch.object(entry.kodi, "open_progress", return_value=mock.MagicMock()),
+            mock.patch.object(entry.kodi, "KodiLibrary", return_value=FakeLibrary([])),
+            mock.patch.object(entry.kodi, "write_limits"),
+            mock.patch.object(entry.kodi, "write_last_run") as write_last,
+            mock.patch.object(entry.kodi, "append_run"),
+            mock.patch.object(entry.kodi, "notify"),
+            mock.patch.object(entry.kodi, "log"),
+            mock.patch.object(entry.kodi, "text", return_value="msg"),
+            mock.patch.object(entry, "_sources", return_value=(mock.MagicMock(), mock.MagicMock(state={}))),
+            mock.patch.object(entry, "update_types", return_value=cancelled_stats),
+        ):
+            entry.run_many(["movie"], True, scheduled=True)
+            write_last.assert_not_called()
+
+    def test_imdb_refresh_reports_download_and_index_progress(self):
+        with tempfile.TemporaryDirectory() as folder:
+            bodies = {
+                "title.ratings.tsv.gz": _gzbytes("tconst\taverageRating\tnumVotes\ntt0000010\t6.5\t8\n"),
+                "title.episode.tsv.gz": _gzbytes(
+                    "tconst\tparentTconst\tseasonNumber\tepisodeNumber\ntt0000011\ttt0000010\t1\t1\n"
+                ),
+            }
+
+            def opener(request, timeout):
+                name = request.full_url.rsplit("/", 1)[-1]
+                headers = {"ETag": "v1", "Last-Modified": "Wed", "Content-Length": str(len(bodies[name]))}
+                body = b"" if request.get_method() == "HEAD" else bodies[name]
+                return _Body(body, headers)
+
+            ticks = []
+            data = ImdbData(folder, opener=opener)
+            try:
+                data.refresh(30, progress=lambda pct, msg: ticks.append((pct, msg)))
+            finally:
+                data._close()
+            self.assertTrue(any(pct >= 25 for pct, _ in ticks))
+            self.assertTrue(any(pct >= 50 for pct, _ in ticks))
 
 
 class Fetch:

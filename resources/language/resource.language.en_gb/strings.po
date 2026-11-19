@@ -237,6 +237,62 @@ msgctxt "#32063"
 msgid "Leave a rating that is already stored, even when the new score has moved. Write a score only when that source is not on the item yet. The minimum change applies when this is off."
 msgstr ""
 
+msgctxt "#32064"
+msgid "Update from MDbList"
+msgstr ""
+
+msgctxt "#32065"
+msgid "MDbList API key"
+msgstr ""
+
+msgctxt "#32066"
+msgid "Optional. Create a free key at mdblist.com/preferences. A free key allows 1,000 requests a day and returns IMDb, TMDb, Trakt, Rotten Tomatoes critic and audience, Metacritic, Letterboxd, and MyAnimeList scores in one call."
+msgstr ""
+
+msgctxt "#32067"
+msgid "MDbList requests per day"
+msgstr ""
+
+msgctxt "#32068"
+msgid "The free MDbList key allows 1,000 requests a day. This addon stops at the number you set and remembers it until the next UTC day. Raise it when your key allows more. 0 keeps no local count."
+msgstr ""
+
+msgctxt "#32069"
+msgid "Rotten Tomatoes Audience"
+msgstr ""
+
+msgctxt "#32070"
+msgid "Letterboxd"
+msgstr ""
+
+msgctxt "#32071"
+msgid "MyAnimeList"
+msgstr ""
+
+msgctxt "#32072"
+msgid "Only items added within (days)"
+msgstr ""
+
+msgctxt "#32073"
+msgid "Limit library updates to items added within this many days. Set 0 to check the entire library."
+msgstr ""
+
+msgctxt "#32074"
+msgid "Update newly added items after a library scan"
+msgstr ""
+
+msgctxt "#32075"
+msgid "Automatically update ratings in the background when Kodi finishes scanning the video library. Uses the days filter above, or the last 7 days when that filter is 0."
+msgstr ""
+
+msgctxt "#32076"
+msgid "Wait while video is playing"
+msgstr ""
+
+msgctxt "#32077"
+msgid "Pause scheduled and automatic library-scan updates while Kodi is playing a video."
+msgstr ""
+
 msgctxt "#32058"
 msgid "All video and the schedule update only the media types that are on. Choosing one type from the addon menu still updates that type. One item from the context menu is always updated."
 msgstr ""
@@ -297,6 +353,14 @@ msgctxt "#32156"
 msgid "All video"
 msgstr ""
 
+msgctxt "#32157"
+msgid "This TV show and its episodes"
+msgstr ""
+
+msgctxt "#32158"
+msgid "This season's episodes"
+msgstr ""
+
 msgctxt "#32160"
 msgid "TMDb is enabled but the API key is empty, so TMDb will be skipped."
 msgstr ""
@@ -311,6 +375,10 @@ msgstr ""
 
 msgctxt "#32163"
 msgid "Turn on IMDb datasets or add a TMDb, OMDb, or Trakt key in the addon settings."
+msgstr ""
+
+msgctxt "#32164"
+msgid "MDbList is enabled but the API key is empty, so MDbList will be skipped."
 msgstr ""
 
 msgctxt "#32165"

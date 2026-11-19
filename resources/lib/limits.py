@@ -44,8 +44,10 @@ class RunCancelled(Exception):
 
 
 class Limiter:
-    def __init__(self, omdb_daily: int = 1000, state: dict | None = None, clock=None) -> None:
+    def __init__(self, omdb_daily: int = 1000, state: dict | None = None, clock=None, mdblist_daily: int = 1000) -> None:
         self.omdb_daily = max(0, int(omdb_daily))
+        self.mdblist_daily = max(0, int(mdblist_daily))
+        self._daily_limits = {"omdb": self.omdb_daily, "mdblist": self.mdblist_daily}
         self.state = state if isinstance(state, dict) else {}
         self.clock = clock or (lambda: datetime.now(timezone.utc).timestamp())
         self._hits: dict[str, list[float]] = {name: [] for name in WINDOWS}
@@ -56,10 +58,11 @@ class Limiter:
         if provider not in WINDOWS:
             return 0.0
         moment = self.clock() if now is None else now
-        if provider == "omdb":
-            self._roll_omdb_day(moment)
-            if self.omdb_daily and int(self.state.get("omdb_used") or 0) >= self.omdb_daily:
-                raise DailyQuota("omdb")
+        daily = self._daily_limits.get(provider, 0)
+        if provider in self._daily_limits:
+            self._roll_day(provider, moment)
+            if daily and int(self.state.get(f"{provider}_used") or 0) >= daily:
+                raise DailyQuota(provider)
         hold = float(self._not_before.get(provider) or 0) - moment
         limit, window = WINDOWS[provider]
         hits = [stamp for stamp in self._hits[provider] if moment - stamp < window]
@@ -74,23 +77,26 @@ class Limiter:
             return
         moment = self.clock() if now is None else now
         self._hits[provider].append(moment)
-        if provider == "omdb":
-            self._roll_omdb_day(moment)
-            self.state["omdb_used"] = int(self.state.get("omdb_used") or 0) + 1
+        if provider in self._daily_limits:
+            self._roll_day(provider, moment)
+            used_key = f"{provider}_used"
+            self.state[used_key] = int(self.state.get(used_key) or 0) + 1
         self._read_reset(provider, headers, moment)
 
     def exhaust(self, provider: str, now: float | None = None) -> None:
         """The provider itself said the allowance is gone."""
-        if provider == "omdb" and self.omdb_daily:
+        daily = self._daily_limits.get(provider, 0)
+        if daily:
             moment = self.clock() if now is None else now
-            self._roll_omdb_day(moment)
-            self.state["omdb_used"] = self.omdb_daily
+            self._roll_day(provider, moment)
+            self.state[f"{provider}_used"] = daily
 
-    def _roll_omdb_day(self, moment: float) -> None:
+    def _roll_day(self, provider: str, moment: float) -> None:
         day = datetime.fromtimestamp(moment, timezone.utc).date().isoformat()
-        if self.state.get("omdb_day") != day:
-            self.state["omdb_day"] = day
-            self.state["omdb_used"] = 0
+        day_key = f"{provider}_day"
+        if self.state.get(day_key) != day:
+            self.state[day_key] = day
+            self.state[f"{provider}_used"] = 0
 
     def _read_reset(self, provider: str, headers, moment: float) -> None:
         raw = _header(headers, "x-ratelimit")
@@ -127,7 +133,7 @@ class PacedTransport:
                 payload, response_headers = self.inner.get_json(url, headers), {}
         except Exception as exc:
             self.limiter.observe(provider)
-            if getattr(exc, "status", None) == 429 and provider == "omdb":
+            if getattr(exc, "status", None) == 429 and provider in {"omdb", "mdblist"}:
                 self.limiter.exhaust(provider)
             raise
         self.limiter.observe(provider, response_headers)

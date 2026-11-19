@@ -8,7 +8,7 @@ also have "tmdb". Unique IDs use "tmdb", which is a different field.
 from __future__ import annotations
 
 TMDB_ALIASES = {"tmdb", "themoviedb"}
-PRIORITY = ("imdb", "themoviedb", "trakt", "tomatometerallcritics", "metacritic")
+PRIORITY = ("imdb", "themoviedb", "trakt", "tomatometerallcritics", "tomatometerallaudience", "metacritic", "letterboxd", "mal")
 
 
 def as_bool(value) -> bool:

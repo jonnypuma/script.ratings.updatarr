@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 
 from resources.lib.config import Config
-from resources.lib.ids import new_uniqueids
+from resources.lib.ids import imdb_id, new_uniqueids, tmdb_id, tvdb_id
 from resources.lib.media import SPECS
 from resources.lib.providers import AuthError, SourceClient
 from resources.lib.limits import RunCancelled
@@ -49,6 +50,8 @@ def update_types(
     type_label=None,
     reading=None,
     item_message=None,
+    recent_days_override: int | None = None,
+    now: datetime | None = None,
 ) -> Stats:
     progress = progress or NullProgress()
     pause = pause or (lambda _seconds: False)
@@ -60,6 +63,7 @@ def update_types(
     )
     stats = Stats()
     lists: dict[str, list] = {}
+    recent_days = int(getattr(config, "recent_days", 0) or 0) if recent_days_override is None else int(recent_days_override)
 
     def load(name: str):
         if name not in lists:
@@ -77,7 +81,9 @@ def update_types(
         if progress.cancelled():
             stats.cancelled = True
             return stats
-        groups.append((name, items))
+        filtered = _filter_recent(items, recent_days, now=now)
+        ordered = _prioritize_for_quota(filtered, config)
+        groups.append((name, ordered))
 
     shows = {item.dbid: item for item in lists.get("tvshow", [])}
     if "episode" in types and "tvshow" not in lists:
@@ -131,6 +137,7 @@ def _walk(groups, shows, library, sources, config, progress, pause, log, type_la
     if total == 0:
         return stats
     seen = 0
+    saved_show_ids: set[int] = set()
     for name, items in groups:
         for item in items:
             if progress.cancelled():
@@ -141,6 +148,12 @@ def _walk(groups, shows, library, sources, config, progress, pause, log, type_la
                 int(seen * 100 / total),
                 item_message(type_label(name), seen, total, item.label()),
             )
+            show = shows.get(item.tvshowid) if item.mediatype == "episode" else None
+            before_show_ids = (
+                dict(show.uniqueids)
+                if show is not None and config.save_ids and show.dbid not in saved_show_ids
+                else None
+            )
             try:
                 requested = _update_item(item, shows, library, sources, config, stats, log)
             except AuthError as exc:
@@ -150,6 +163,15 @@ def _walk(groups, shows, library, sources, config, progress, pause, log, type_la
             except RunCancelled:
                 stats.cancelled = True
                 return stats
+            finally:
+                if before_show_ids is not None and show is not None:
+                    new_show_uid = new_uniqueids(before_show_ids, show.uniqueids)
+                    if new_show_uid:
+                        try:
+                            library.apply(show, {}, new_show_uid)
+                        except Exception as exc:
+                            log(f"{show.label()}: could not save discovered IDs ({exc})")
+                        saved_show_ids.add(show.dbid)
             if requested and seen < total and config.delay_seconds > 0:
                 if pause(config.delay_seconds):
                     stats.cancelled = True
@@ -205,3 +227,60 @@ def _remember(stats: Stats, log, message: str) -> None:
     log(message)
     if len(stats.failures) < 20:
         stats.failures.append(message)
+
+
+def _filter_recent(items: list, days: int, now: datetime | None = None) -> list:
+    if days <= 0:
+        return list(items)
+    reference = now or datetime.now()
+    if reference.tzinfo is not None:
+        reference = reference.replace(tzinfo=None)
+    cutoff = reference - timedelta(days=days)
+    kept = []
+    for item in items:
+        added = _parse_dateadded(getattr(item, "dateadded", ""))
+        if added is None or added >= cutoff:
+            kept.append(item)
+    return kept
+
+
+def _parse_dateadded(value: str) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(text, fmt)
+        except ValueError:
+            continue
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+    except ValueError:
+        return None
+
+
+def _prioritize_for_quota(items: list, config: Config) -> list:
+    omdb_on = getattr(config, "omdb_active", False)
+    mdblist_on = getattr(config, "mdblist_active", False)
+    if (not omdb_on and not mdblist_on) or getattr(config, "update_missing_only", False):
+        return list(items)
+    wanted: set[str] = set()
+    if omdb_on:
+        wanted.update({"tomatometerallcritics", "metacritic"})
+    if mdblist_on:
+        wanted.update({"tomatometerallcritics", "tomatometerallaudience", "metacritic", "letterboxd"})
+
+    def sort_key(item) -> int:
+        has_id = bool(
+            imdb_id(item.uniqueids, item.imdbnumber)
+            or tmdb_id(item.uniqueids, item.imdbnumber, allow_numeric_fallback=(item.mediatype == "movie"))
+            or tvdb_id(item.uniqueids)
+            or item.mediatype == "episode"
+        )
+        if not has_id:
+            return 1
+        existing_keys = {str(k).lower() for k, v in (item.ratings or {}).items() if isinstance(v, dict) and float(v.get("rating") or 0) > 0}
+        return 0 if wanted - existing_keys else 1
+
+    return sorted(items, key=sort_key)
