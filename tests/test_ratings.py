@@ -749,7 +749,7 @@ class PackageTests(unittest.TestCase):
         self.assertIn("action=refreshimdb", settings)
         self.assertIn('id="omdb_key"', settings)
         self.assertIn('id="trakt_key"', settings)
-        for name in ("default.py", "context_item.py", "service.py", "resources/settings.xml", "resources/icon.png", "resources/fanart.png"):
+        for name in ("default.py", "context_item.py", "service.py", "resources/settings.xml", "icon.png", "fanart.png"):
             self.assertTrue((ROOT / name).is_file(), name)
 
     def test_every_referenced_string_exists(self):

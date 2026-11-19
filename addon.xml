@@ -56,8 +56,8 @@ v1.0.0
 - Optional scheduled run
     </news>
     <assets>
-      <icon>resources/icon.png</icon>
-      <fanart>resources/fanart.png</fanart>
+      <icon>icon.png</icon>
+      <fanart>fanart.png</fanart>
     </assets>
   </extension>
 </addon>
