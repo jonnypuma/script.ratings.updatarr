@@ -1,5 +1,7 @@
 # Ratings Updatarr
 
+**Project page:** [jonnypuma.github.io/#/script.ratings.updatarr](https://jonnypuma.github.io/#/script.ratings.updatarr) · **All add-ons and apps by jonnypuma:** [jonnypuma.github.io](https://jonnypuma.github.io/)
+
 Ratings Updatarr refreshes scraped ratings in a Kodi 22 Piers library. It can update movies, TV shows, episodes, or all three. Your personal star rating is left alone. Seasons only store that personal rating, so they are not part of an update.
 
 TMDb is the main online source. IMDb scores come from IMDb's own ratings and episode files, downloaded about every 30 days for personal, non-commercial use. OMDb adds Rotten Tomatoes critic and Metacritic scores. Trakt adds the public Trakt score. This product uses the TMDb API but is not endorsed or certified by TMDb. The IMDb files are described at [developer.imdb.com/non-commercial-datasets](https://developer.imdb.com/non-commercial-datasets).
