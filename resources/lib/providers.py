@@ -249,6 +249,13 @@ class SourceClient:
             show_tmdb, show_imdb = self._resolve_show_ids(show, result)
         episode_imdb = imdb_id(item.uniqueids, "")
         episode_imdb = self._apply_helper(result, "episode", show_tmdb, episode_imdb, item.season, item.episode) or episode_imdb
+        found = self._local_episode(show_imdb, item.season, item.episode)
+        if found:
+            if found.get("imdb"):
+                episode_imdb = episode_imdb or found["imdb"]
+                result.discovered_ids.setdefault("imdb", found["imdb"])
+            if found.get("rating"):
+                result.ratings["imdb"] = found["rating"]
         if (
             self.config.tmdb_active
             and show_tmdb
@@ -256,14 +263,25 @@ class SourceClient:
             and item.episode is not None
             and self._needs_tmdb(result, episode_imdb)
         ):
-            payload = self._guard(
-                result,
-                "tmdb",
-                self._tmdb_episode,
-                show_tmdb,
-                item.season,
-                item.episode,
-            )
+            payload = None
+            if episode_imdb:
+                payload = self._guard(
+                    result,
+                    "tmdb",
+                    self._tmdb_season_episode,
+                    show_tmdb,
+                    item.season,
+                    item.episode,
+                )
+            if payload is None:
+                payload = self._guard(
+                    result,
+                    "tmdb",
+                    self._tmdb_episode,
+                    show_tmdb,
+                    item.season,
+                    item.episode,
+                )
             if isinstance(payload, dict):
                 parsed = parse_tmdb_rating(payload)
                 if parsed:
@@ -276,13 +294,6 @@ class SourceClient:
                 episode_tmdb = payload.get("id")
                 if is_numeric_id(str(episode_tmdb or "")):
                     result.discovered_ids["tmdb"] = str(int(episode_tmdb))
-        found = self._local_episode(show_imdb, item.season, item.episode)
-        if found:
-            if found.get("imdb"):
-                episode_imdb = episode_imdb or found["imdb"]
-                result.discovered_ids.setdefault("imdb", found["imdb"])
-            if found.get("rating"):
-                result.ratings["imdb"] = found["rating"]
         if "imdb" not in result.ratings and episode_imdb:
             local = self._local_rating(episode_imdb)
             if local:
@@ -485,6 +496,17 @@ class SourceClient:
         path = f"/tv/{show_tmdb}/season/{int(season)}/episode/{int(episode)}"
         return self._get(self._tmdb_url(path, append_to_response="external_ids"))
 
+    def _tmdb_season_episode(self, show_tmdb: str, season: int, episode: int):
+        path = f"/tv/{show_tmdb}/season/{int(season)}"
+        payload = self._get(self._tmdb_url(path))
+        if not isinstance(payload, dict):
+            return None
+        target = int(episode)
+        for row in payload.get("episodes") or []:
+            if isinstance(row, dict) and row.get("episode_number") == target:
+                return row
+        return None
+
     def _tmdb_find(self, external_id: str, external_source: str, kind: str):
         quoted = urllib.parse.quote(str(external_id), safe="")
         payload = self._get(
@@ -611,3 +633,47 @@ def _external_ids(payload: dict, kind: str) -> dict[str, str]:
     if kind == "tv" and is_numeric_id(str(tvdb or "")):
         found["tvdb"] = str(int(tvdb))
     return found
+
+
+def test_providers(config: Config, transport) -> dict[str, str]:
+    """Run a lightweight key check for each enabled online provider."""
+    results: dict[str, str] = {}
+    client = SourceClient(config, transport)
+    checks = []
+    if config.use_tmdb:
+        if not config.tmdb_key:
+            results["TMDb"] = "No API key"
+        else:
+            checks.append(("TMDb", lambda: transport.get_json(client._tmdb_url("/configuration"))))
+    if config.use_omdb:
+        if not config.omdb_key:
+            results["OMDb"] = "No API key"
+        else:
+            checks.append(("OMDb", lambda: parse_omdb(client._omdb("tt0137523"))))
+    if config.use_mdblist:
+        if not config.mdblist_key:
+            results["MDbList"] = "No API key"
+        else:
+            checks.append(("MDbList", lambda: client._mdblist_ratings("movie", "tt0137523", "", "")))
+    if config.use_trakt:
+        if not config.trakt_key:
+            results["Trakt"] = "No client ID"
+        else:
+            url = f"{TRAKT_BASE}/movies/tt0137523/ratings"
+            checks.append(("Trakt", lambda u=url: transport.get_json(u, headers=client._trakt_headers())))
+    for name, fn in checks:
+        try:
+            fn()
+            results[name] = "OK"
+        except AuthError:
+            results[name] = "Invalid API key"
+        except HttpStatus as exc:
+            if exc.status in {401, 403}:
+                results[name] = "Invalid API key"
+            elif exc.status == 429:
+                results[name] = "Rate limit reached"
+            else:
+                results[name] = str(exc)
+        except Exception as exc:
+            results[name] = str(exc)
+    return results

@@ -293,6 +293,38 @@ msgctxt "#32077"
 msgid "Pause scheduled and automatic library-scan updates while Kodi is playing a video."
 msgstr ""
 
+msgctxt "#32078"
+msgid "Status & test keys"
+msgstr ""
+
+msgctxt "#32079"
+msgid "Show IMDb index status, daily provider quotas, and test all enabled API keys."
+msgstr ""
+
+msgctxt "#32080"
+msgid "Minimum vote increase (%)"
+msgstr ""
+
+msgctxt "#32081"
+msgid "Also rewrite a stored rating when its vote count grows by at least this percentage, even if the score stayed within the minimum change. Set 0 to ignore vote-only changes."
+msgstr ""
+
+msgctxt "#32082"
+msgid "Preview changes only (dry run)"
+msgstr ""
+
+msgctxt "#32083"
+msgid "Check sources and log what would change without writing to the Kodi library or .nfo files."
+msgstr ""
+
+msgctxt "#32084"
+msgid "Update existing .nfo files"
+msgstr ""
+
+msgctxt "#32085"
+msgid "When a movie, TV show, or episode already has an .nfo file next to it, update its <ratings> (and missing <uniqueid> tags) on disk."
+msgstr ""
+
 msgctxt "#32058"
 msgid "All video and the schedule update only the media types that are on. Choosing one type from the addon menu still updates that type. One item from the context menu is always updated."
 msgstr ""
@@ -323,6 +355,10 @@ msgstr ""
 
 msgctxt "#32106"
 msgid "Choose what to update"
+msgstr ""
+
+msgctxt "#32107"
+msgid "Recently added"
 msgstr ""
 
 msgctxt "#32150"
@@ -447,4 +483,8 @@ msgstr ""
 
 msgctxt "#32187"
 msgid "No rating updates have been logged yet."
+msgstr ""
+
+msgctxt "#32190"
+msgid "Dry run. Checked {checked}. Would update {updated}. Unchanged {unchanged}. Skipped {skipped}. Failed {failed}."
 msgstr ""

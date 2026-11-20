@@ -44,6 +44,9 @@ class Config:
     omdb_daily_limit: int = 1000
     mdblist_daily_limit: int = 1000
     recent_days: int = 0
+    vote_change_percent: int = 0
+    write_nfo: bool = False
+    dry_run: bool = False
     schedule_enabled: bool = False
     schedule_mode: str = "daily"
     schedule_times: str = "03:00"
@@ -86,6 +89,10 @@ class Config:
             self.recent_days = max(0, int(self.recent_days))
         except (TypeError, ValueError):
             self.recent_days = 0
+        try:
+            self.vote_change_percent = max(0, int(self.vote_change_percent))
+        except (TypeError, ValueError):
+            self.vote_change_percent = 0
 
     @property
     def tmdb_active(self) -> bool:

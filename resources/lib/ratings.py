@@ -97,13 +97,15 @@ def build_rating_update(
     preferred: str,
     minimum_change: float = 0.2,
     missing_only: bool = False,
+    vote_change_percent: int = 0,
 ) -> dict | None:
     """Return the ratings to send, or None when nothing should be written.
 
     ``minimum_change`` of 0 writes every fetched score, including scores that
     already match the library. Any larger value writes a score only when it is
     new or it has moved by more than that amount. ``missing_only`` writes a
-    score only when that source is not already stored.
+    score only when that source is not already stored. ``vote_change_percent``
+    also triggers a write when votes grow by at least that percentage.
     """
     if not fetched:
         return None
@@ -113,6 +115,10 @@ def build_rating_update(
         threshold = 0.2
     if threshold < 0:
         threshold = 0.0
+    try:
+        vote_pct = max(0, int(vote_change_percent or 0))
+    except (TypeError, ValueError):
+        vote_pct = 0
     existing_n = normalize_existing(existing)
     refreshed: dict[str, dict] = {}
     changed: set[str] = set()
@@ -135,6 +141,8 @@ def build_rating_update(
                 moved = True
             else:
                 moved = threshold <= 0 or abs(round(old["rating"], 3) - rating) > threshold
+                if not moved and vote_pct > 0 and old["votes"] > 0 and use_votes > old["votes"]:
+                    moved = (use_votes - old["votes"]) * 100 >= old["votes"] * vote_pct
             missing = old is None or old["rating"] <= 0
             if missing or (not missing_only and moved):
                 changed.add(key)

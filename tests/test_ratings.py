@@ -355,7 +355,7 @@ class SourceTests(unittest.TestCase):
                 ),
             ]
         )
-        show = LibraryItem(mediatype="tvshow", dbid=4, title="Show", uniqueids={"tmdb": "100", "imdb": "ttSHOW"})
+        show = LibraryItem(mediatype="tvshow", dbid=4, title="Show", uniqueids={"tmdb": "100", "imdb": "tt0000100"})
         episode = LibraryItem(
             mediatype="episode",
             dbid=8,
@@ -1072,6 +1072,139 @@ class ImprovementsAndFixesTests(unittest.TestCase):
                 data._close()
             self.assertTrue(any(pct >= 25 for pct, _ in ticks))
             self.assertTrue(any(pct >= 50 for pct, _ in ticks))
+
+    def test_tmdb_season_batching_reuses_one_request_for_all_episodes(self):
+        class FakeIndex:
+            def episode(self, show_imdb, season, number):
+                return {"imdb": f"tt100{number}", "rating": {"rating": 8.5, "votes": 100}}
+
+            def rating(self, imdb):
+                return None
+
+        transport = MapTransport(
+            [
+                (
+                    "/tv/100/season/1?",
+                    {
+                        "episodes": [
+                            {"episode_number": 1, "id": 501, "vote_average": 7.8, "vote_count": 25},
+                            {"episode_number": 2, "id": 502, "vote_average": 8.2, "vote_count": 30},
+                        ]
+                    },
+                )
+            ]
+        )
+        show = LibraryItem(mediatype="tvshow", dbid=4, title="Show", uniqueids={"tmdb": "100", "imdb": "tt0000100"})
+        ep1 = LibraryItem(mediatype="episode", dbid=11, title="E1", season=1, episode=1, tvshowid=4)
+        ep2 = LibraryItem(mediatype="episode", dbid=12, title="E2", season=1, episode=2, tvshowid=4)
+        cfg = Config(tmdb_key="k", use_tmdb=True, use_imdb_data=True)
+        client = SourceClient(cfg, transport, imdb=FakeIndex())
+        r1 = client.ratings_for(ep1, show)
+        r2 = client.ratings_for(ep2, show)
+        self.assertEqual(len(transport.urls), 1)
+        self.assertIn("/tv/100/season/1?", transport.urls[0])
+        self.assertEqual(r1.ratings["themoviedb"]["rating"], 7.8)
+        self.assertEqual(r2.ratings["themoviedb"]["rating"], 8.2)
+        self.assertEqual(r2.discovered_ids["tmdb"], "502")
+
+    def test_json_client_retries_transient_network_errors(self):
+        calls = {"count": 0}
+
+        def opener(request, timeout):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise urllib.error.URLError("temporary dns glitch")
+            return FakeResponse(b'{"ok": true}')
+
+        slept = []
+        payload = JsonClient(opener=opener, sleeper=slept.append).get_json("https://api.test/ping")
+        self.assertEqual(payload, {"ok": True})
+        self.assertEqual(calls["count"], 2)
+        self.assertEqual(len(slept), 1)
+
+    def test_imdb_index_skips_unrated_episodes_and_reports_status(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ratings = os.path.join(folder, "ratings.tsv.gz")
+            episodes = os.path.join(folder, "episodes.tsv.gz")
+            _gzip(ratings, "tconst\taverageRating\tnumVotes\ntt0000002\t7.5\t10\n")
+            _gzip(
+                episodes,
+                "tconst\tparentTconst\tseasonNumber\tepisodeNumber\n"
+                "tt0000002\ttt0000001\t1\t1\n"
+                "tt0000003\ttt0000001\t1\t2\n",
+            )
+            counts = build_index(ratings, episodes, os.path.join(folder, "imdb.sqlite"))
+            self.assertEqual(counts, {"ratings": 1, "episodes": 1})
+            data = ImdbData(folder)
+            try:
+                self.assertIsNotNone(data.episode("tt1", 1, 1))
+                self.assertIsNone(data.episode("tt1", 1, 2))
+                st = data.status(30)
+                self.assertTrue(st["ready"])
+                self.assertGreater(st["size_bytes"], 0)
+            finally:
+                data._close()
+
+    def test_provider_key_tester(self):
+        from resources.lib.providers import test_providers
+
+        transport = MapTransport(
+            [
+                ("/configuration", {"images": {}}),
+                ("omdbapi.com", HttpStatus(401, "Invalid API key")),
+            ]
+        )
+        cfg = Config(use_tmdb=True, tmdb_key="good", use_omdb=True, omdb_key="bad", use_trakt=True, trakt_key="")
+        res = test_providers(cfg, transport)
+        self.assertEqual(res["TMDb"], "OK")
+        self.assertEqual(res["OMDb"], "Invalid API key")
+        self.assertEqual(res["Trakt"], "No client ID")
+
+    def test_vote_change_percent_and_dry_run_changes(self):
+        existing = {"imdb": {"rating": 8.0, "votes": 100, "default": True}}
+        self.assertIsNone(build_rating_update(existing, {"imdb": {"rating": 8.0, "votes": 120}}, "keep", 0.2, False, 50))
+        updated = build_rating_update(existing, {"imdb": {"rating": 8.0, "votes": 160}}, "keep", 0.2, False, 50)
+        self.assertEqual(updated["imdb"]["votes"], 160)
+
+        lib = FakeLibrary([movie(dbid=1, title="Inception", uniqueids={"imdb": "tt1"}, ratings=existing)])
+        nfo_calls = []
+        cfg = Config(use_imdb_data=True, dry_run=True, write_nfo=True, vote_change_percent=50, delay_seconds=0)
+        stats = update_items(
+            lib.items,
+            {},
+            lib,
+            ScriptedSource(lambda item, show: Fetch(ratings={"imdb": {"rating": 8.0, "votes": 160}})),
+            cfg,
+            nfo_writer=lambda *args: nfo_calls.append(args),
+        )
+        self.assertEqual(stats.updated, 1)
+        self.assertEqual(lib.applied, [])
+        self.assertEqual(nfo_calls, [])
+        self.assertIn("Inception", stats.changes[0])
+
+    def test_nfo_candidates_and_xml_update(self):
+        from resources.lib.nfo import nfo_candidates, update_nfo_xml
+
+        self.assertEqual(nfo_candidates("tvshow", "/media/TV/Show/"), ["/media/TV/Show/tvshow.nfo"])
+        self.assertEqual(nfo_candidates("movie", "/media/Movies/A/A.mkv"), ["/media/Movies/A/A.nfo", "/media/Movies/A/movie.nfo"])
+
+        xml = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<movie><title>Example</title>"
+            "<ratings><rating name=\"imdb\" default=\"true\"><value>7.0</value><votes>10</votes></rating></ratings>"
+            "<uniqueid type=\"imdb\">tt1</uniqueid></movie>"
+        )
+        out = update_nfo_xml(
+            xml,
+            {"imdb": {"rating": 8.1, "votes": 500, "default": True}, "letterboxd": {"rating": 8.4, "votes": 900}},
+            {"tmdb": "550", "imdb": "tt999"},
+        )
+        self.assertIsNotNone(out)
+        self.assertIn("<title>Example</title>", out)
+        self.assertIn("<value>8.1</value>", out)
+        self.assertIn('name="letterboxd"', out)
+        self.assertIn('<uniqueid type="tmdb">550</uniqueid>', out)
+        self.assertNotIn("tt999", out)
 
 
 class Fetch:

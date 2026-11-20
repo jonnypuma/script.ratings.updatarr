@@ -66,23 +66,31 @@ def build_index(ratings_path: str, episodes_path: str, target: str, should_stop=
 
         def on_episodes_batch(done: int) -> None:
             if progress:
-                pct = min(95, 58 + int(done * 37 / 8_000_000))
+                pct = min(95, 58 + int(done * 37 / 1_500_000))
                 progress(pct, f"Indexing IMDb episodes ({done:,})")
+
+        rated_ids: set[int] = set()
+
+        def tracked_ratings():
+            for row in _rating_rows(ratings_path):
+                rated_ids.add(row[0])
+                yield row
 
         ratings_count = _insert(
             connection,
             "INSERT OR REPLACE INTO ratings VALUES (?, ?, ?)",
-            _rating_rows(ratings_path),
+            tracked_ratings(),
             should_stop,
             on_batch=on_ratings_batch,
         )
         episodes_count = _insert(
             connection,
             "INSERT INTO episodes VALUES (?, ?, ?, ?)",
-            _episode_rows(episodes_path),
+            _episode_rows(episodes_path, rated_ids),
             should_stop,
             on_batch=on_episodes_batch,
         )
+        rated_ids.clear()
         if progress:
             progress(96, "Building IMDb episode index")
         connection.execute("CREATE INDEX idx_episodes_parent_season_num ON episodes (parent, season, number)")
@@ -139,6 +147,28 @@ class ImdbData:
 
     def ready(self) -> bool:
         return self._db() is not None
+
+    def status(self, days: int, now: float | None = None) -> dict:
+        meta = self._meta()
+        state = self._state()
+        try:
+            counts = json.loads(meta.get("counts") or "{}")
+        except (TypeError, ValueError):
+            counts = {}
+        try:
+            size_bytes = os.path.getsize(self.index_path)
+        except OSError:
+            size_bytes = 0
+        return {
+            "ready": self.ready(),
+            "built_at": int(meta.get("built_at") or 0),
+            "checked_at": int(meta.get("checked_at") or 0),
+            "due": self.due(days, now=now),
+            "size_bytes": size_bytes,
+            "ratings": int(counts.get("ratings") or 0),
+            "episodes": int(counts.get("episodes") or 0),
+            "error": str(state.get("error") or ""),
+        }
 
     def due(self, days: int, now: float | None = None) -> bool:
         moment = time.time() if now is None else now
@@ -411,7 +441,7 @@ def _rating_rows(path: str):
             yield (number, average, votes)
 
 
-def _episode_rows(path: str):
+def _episode_rows(path: str, rated_ids: set[int] | None = None):
     lines = _lines(path)
     columns = _columns(next(lines), ("tconst", "parentTconst", "seasonNumber", "episodeNumber"), EPISODES)
     for line in lines:
@@ -423,6 +453,8 @@ def _episode_rows(path: str):
         except IndexError:
             continue
         if None not in (number, parent, season, episode):
+            if rated_ids is not None and number not in rated_ids:
+                continue
             yield (parent, season, episode, number)
 
 

@@ -22,6 +22,7 @@ class Stats:
     cancelled: bool = False
     stopped: str = ""
     failures: list = field(default_factory=list)
+    changes: list = field(default_factory=list)
 
     @property
     def total_seen(self) -> int:
@@ -52,6 +53,7 @@ def update_types(
     item_message=None,
     recent_days_override: int | None = None,
     now: datetime | None = None,
+    nfo_writer=None,
 ) -> Stats:
     progress = progress or NullProgress()
     pause = pause or (lambda _seconds: False)
@@ -93,7 +95,7 @@ def update_types(
         progress.update(0, reading(type_label("tvshow")))
         shows = {item.dbid: item for item in library.list_items("tvshow")}
 
-    return _walk(groups, shows, library, sources, config, progress, pause, log, type_label, item_message, stats)
+    return _walk(groups, shows, library, sources, config, progress, pause, log, type_label, item_message, stats, nfo_writer=nfo_writer)
 
 
 def update_items(
@@ -107,6 +109,7 @@ def update_items(
     log=None,
     type_label=None,
     item_message=None,
+    nfo_writer=None,
 ) -> Stats:
     """Update an explicit item list. Used for one selected library item."""
     progress = progress or NullProgress()
@@ -129,10 +132,11 @@ def update_items(
         type_label,
         item_message,
         stats,
+        nfo_writer=nfo_writer,
     )
 
 
-def _walk(groups, shows, library, sources, config, progress, pause, log, type_label, item_message, stats) -> Stats:
+def _walk(groups, shows, library, sources, config, progress, pause, log, type_label, item_message, stats, nfo_writer=None) -> Stats:
     total = sum(len(items) for _name, items in groups)
     if total == 0:
         return stats
@@ -151,11 +155,11 @@ def _walk(groups, shows, library, sources, config, progress, pause, log, type_la
             show = shows.get(item.tvshowid) if item.mediatype == "episode" else None
             before_show_ids = (
                 dict(show.uniqueids)
-                if show is not None and config.save_ids and show.dbid not in saved_show_ids
+                if show is not None and config.save_ids and not getattr(config, "dry_run", False) and show.dbid not in saved_show_ids
                 else None
             )
             try:
-                requested = _update_item(item, shows, library, sources, config, stats, log)
+                requested = _update_item(item, shows, library, sources, config, stats, log, nfo_writer=nfo_writer)
             except AuthError as exc:
                 stats.stopped = exc.provider
                 log(f"Stopped: {exc.provider} rejected the API key")
@@ -179,7 +183,7 @@ def _walk(groups, shows, library, sources, config, progress, pause, log, type_la
     return stats
 
 
-def _update_item(item, shows, library, sources, config, stats, log) -> bool:
+def _update_item(item, shows, library, sources, config, stats, log, nfo_writer=None) -> bool:
     show = shows.get(item.tvshowid) if item.mediatype == "episode" else None
     try:
         fetched = sources.ratings_for(item, show)
@@ -201,15 +205,25 @@ def _update_item(item, shows, library, sources, config, stats, log) -> bool:
         config.preferred_default,
         getattr(config, "minimum_change", 0.2),
         getattr(config, "update_missing_only", False),
+        getattr(config, "vote_change_percent", 0),
     )
     uniqueids = new_uniqueids(item.uniqueids, fetched.discovered_ids) if config.save_ids else {}
     if rating_payload or uniqueids:
-        try:
-            library.apply(item, rating_payload or {}, uniqueids)
-        except Exception as exc:
-            stats.failed += 1
-            _remember(stats, log, f"{item.label()}: {exc}")
-            return fetched.requested
+        change_line = _format_change(item, rating_payload or {}, uniqueids)
+        if not getattr(config, "dry_run", False):
+            try:
+                library.apply(item, rating_payload or {}, uniqueids)
+            except Exception as exc:
+                stats.failed += 1
+                _remember(stats, log, f"{item.label()}: {exc}")
+                return fetched.requested
+            if getattr(config, "write_nfo", False) and nfo_writer is not None:
+                try:
+                    nfo_writer(item, rating_payload or {}, uniqueids)
+                except Exception as exc:
+                    log(f"{item.label()}: could not update .nfo ({exc})")
+        if len(stats.changes) < 200:
+            stats.changes.append(change_line)
         stats.updated += 1
         return fetched.requested
     if fetched.errors and not fetched.ratings:
@@ -221,6 +235,21 @@ def _update_item(item, shows, library, sources, config, stats, log) -> bool:
         return fetched.requested
     stats.skipped += 1
     return fetched.requested
+
+
+def _format_change(item, rating_payload: dict, uniqueids: dict) -> str:
+    parts = []
+    existing = item.ratings or {}
+    for key, val in rating_payload.items():
+        new_score = val.get("rating")
+        old_entry = existing.get(key)
+        if isinstance(old_entry, dict) and float(old_entry.get("rating") or 0) > 0:
+            parts.append(f"{key} {float(old_entry['rating']):.1f}->{float(new_score):.1f}")
+        else:
+            parts.append(f"+{key} {float(new_score):.1f}")
+    for key in uniqueids:
+        parts.append(f"+id:{key}")
+    return f"{item.label()}: {', '.join(parts)}"
 
 
 def _remember(stats: Stats, log, message: str) -> None:

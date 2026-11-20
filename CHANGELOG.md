@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.1] - 2026-11-20
+
+### Added
+- **Status & Key Tester:** Added **Status & test keys** (`action=status`) showing local IMDb index stats/size, daily UTC quotas, TMDbHelper status, and live API key checks for enabled online providers.
+- **Dry-Run Preview, Vote Threshold & Change Log:** Added **Preview changes only (dry run)** (`dry_run`), `vote_change_percent` vote-growth refresh threshold, and per-item rating diff logs stored in `runs.json` and shown in **Recent runs**.
+- **Optional `.nfo` Writeback:** Added **Update existing .nfo files** (`write_nfo`) to update `<ratings>` and missing `<uniqueid>` tags in existing sidecar `.nfo` files.
+- **Menu & RunScript Shortcuts:** Added **Recently added** to the main menu and `episodes=true` RunScript flag for `tvshow`.
+
+### Changed
+- **TMDb Season Batching & HTTP Keep-Alive:** Fetches `/tv/{id}/season/{s}` once per season when episode IMDb IDs are known locally, adds `http.client` keep-alive connection pooling and transient `URLError` retries in `JsonClient`, and updates `USER_AGENT` to `1.3`.
+- **Smaller IMDb SQLite Index:** Skips unrated episodes during `build_index()`, shrinking `imdb.sqlite` by ~75% and speeding up indexing.
+
+---
+
 ## [1.3.0] - 2026-11-19
 
 ### Added

@@ -34,7 +34,7 @@ MEDIA: tuple[MediaSpec, ...] = (
         details_key="moviedetails",
         id_field="movieid",
         set_method="VideoLibrary.SetMovieDetails",
-        properties=("title", "uniqueid", "ratings", "imdbnumber", "dateadded"),
+        properties=("title", "uniqueid", "ratings", "imdbnumber", "dateadded", "file"),
         source_kind="movie",
         plural_label="Movies",
     ),
@@ -49,7 +49,7 @@ MEDIA: tuple[MediaSpec, ...] = (
         details_key="tvshowdetails",
         id_field="tvshowid",
         set_method="VideoLibrary.SetTVShowDetails",
-        properties=("title", "uniqueid", "ratings", "imdbnumber", "dateadded"),
+        properties=("title", "uniqueid", "ratings", "imdbnumber", "dateadded", "file"),
         source_kind="tv",
         plural_label="TV shows",
     ),
@@ -64,7 +64,7 @@ MEDIA: tuple[MediaSpec, ...] = (
         details_key="episodedetails",
         id_field="episodeid",
         set_method="VideoLibrary.SetEpisodeDetails",
-        properties=("title", "showtitle", "season", "episode", "tvshowid", "uniqueid", "ratings", "dateadded"),
+        properties=("title", "showtitle", "season", "episode", "tvshowid", "uniqueid", "ratings", "dateadded", "file"),
         source_kind="episode",
         plural_label="Episodes",
     ),
@@ -101,12 +101,14 @@ class LibraryItem:
     showtitle: str = ""
     tvshowid: int | None = None
     dateadded: str = ""
+    file: str = ""
 
     def __post_init__(self) -> None:
         self.uniqueids = dict(self.uniqueids or {})
         self.ratings = dict(self.ratings or {})
         self.imdbnumber = str(self.imdbnumber or "")
         self.dateadded = str(self.dateadded or "")
+        self.file = str(self.file or "")
 
     def label(self) -> str:
         if self.mediatype == "episode":
@@ -140,6 +142,7 @@ def item_from_json(mediatype: str, payload: dict) -> LibraryItem:
         showtitle=str(payload.get("showtitle") or ""),
         tvshowid=int(tvshowid) if _optional_int(tvshowid) else None,
         dateadded=str(payload.get("dateadded") or ""),
+        file=str(payload.get("file") or ""),
     )
 
 

@@ -14,6 +14,7 @@ import xbmcvfs
 
 from resources.lib.config import Config
 from resources.lib.library import LibraryClient, parse_rpc_payload
+from resources.lib.nfo import nfo_candidates, update_nfo_xml
 from resources.lib.updater import NullProgress
 
 
@@ -165,6 +166,9 @@ def load_config() -> Config:
         omdb_daily_limit=_int(current, "omdb_daily_limit", 1000),
         mdblist_daily_limit=_int(current, "mdblist_daily_limit", 1000),
         recent_days=_int(current, "recent_days", 0),
+        vote_change_percent=_int(current, "vote_change_percent", 0),
+        write_nfo=_bool(current, "write_nfo", False),
+        dry_run=_bool(current, "dry_run", False),
         schedule_enabled=_bool(current, "schedule_enabled", False),
         schedule_mode=_string(current, "schedule_mode") or "daily",
         schedule_times=_string(current, "schedule_times") or "03:00",
@@ -317,6 +321,27 @@ def show_text(heading: str, body: str) -> None:
         xbmcgui.Dialog().textviewer(heading, body)
     except Exception as exc:
         log(f"Could not show the run log: {exc}", xbmc.LOGWARNING)
+
+
+def write_item_nfo(item, ratings: dict, uniqueids: dict) -> bool:
+    for path in nfo_candidates(item.mediatype, getattr(item, "file", "")):
+        if not xbmcvfs.exists(path):
+            continue
+        handle = xbmcvfs.File(path, "r")
+        try:
+            raw = handle.read()
+        finally:
+            handle.close()
+        updated = update_nfo_xml(raw, ratings, uniqueids)
+        if not updated:
+            return False
+        out = xbmcvfs.File(path, "w")
+        try:
+            out.write(updated)
+        finally:
+            out.close()
+        return True
+    return False
 
 
 def _percent(value: int) -> int:
