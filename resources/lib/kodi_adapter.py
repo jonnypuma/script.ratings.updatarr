@@ -13,6 +13,13 @@ import xbmcgui
 import xbmcvfs
 
 from resources.lib.config import Config
+from resources.lib.db_library import (
+    DatabaseLibrary,
+    MySQLBackend,
+    SQLiteBackend,
+    find_latest_sqlite_db,
+    parse_advanced_settings,
+)
 from resources.lib.library import LibraryClient, parse_rpc_payload
 from resources.lib.nfo import nfo_candidates, update_nfo_xml
 from resources.lib.updater import NullProgress
@@ -179,12 +186,88 @@ def load_config() -> Config:
         startup_delay=_int(current, "startup_delay", 120),
         update_on_scan=_bool(current, "update_on_scan", False),
         pause_during_playback=_bool(current, "pause_during_playback", True),
+        db_mode=_string(current, "db_mode") or "jsonrpc",
+        db_name_override=_string(current, "db_name_override"),
+        db_type=_string(current, "db_type") or "mysql",
+        db_host=_string(current, "db_host") or "localhost",
+        db_port=_int(current, "db_port", 3306),
+        db_name=_string(current, "db_name") or "kodi22_videos",
+        db_user=_string(current, "db_user"),
+        db_pass=_raw_string(current, "db_pass"),
+        db_sqlite_path=_translate_path(_string(current, "db_sqlite_path")),
     )
 
 
 class KodiLibrary(LibraryClient):
     def __init__(self) -> None:
         super().__init__(execute)
+
+    def close(self) -> None:
+        return None
+
+    def describe(self) -> str:
+        return "Kodi JSON-RPC (active library)"
+
+
+def _kodi_max_video_schema() -> int | None:
+    try:
+        ver_str = xbmc.getInfoLabel("System.BuildVersion") or ""
+        major_text = ver_str.strip().split(".", 1)[0]
+        if not major_text.isdigit():
+            return None
+        major = int(major_text)
+        if major <= 21:
+            return 131
+        if major == 22:
+            return 150
+        return None
+    except Exception:
+        return None
+
+
+def open_library(config: Config):
+    if config.db_mode == "jsonrpc":
+        return KodiLibrary()
+    if config.db_mode == "auto":
+        adv_path = xbmcvfs.translatePath("special://profile/advancedsettings.xml")
+        parsed = None
+        if adv_path and os.path.isfile(adv_path):
+            try:
+                with open(adv_path, encoding="utf-8", errors="replace") as handle:
+                    parsed = parse_advanced_settings(handle.read())
+            except OSError:
+                parsed = None
+        if parsed and parsed.get("type") == "mysql":
+            db_name = config.db_name_override or parsed.get("name") or "MyVideos"
+            backend = MySQLBackend(
+                host=parsed.get("host") or "localhost",
+                port=int(parsed.get("port") or 3306),
+                user=parsed.get("user") or "",
+                password=parsed.get("pass") or "",
+                db_name=db_name,
+                max_schema=_kodi_max_video_schema(),
+            )
+            return DatabaseLibrary(backend.connect())
+        db_dir = xbmcvfs.translatePath("special://profile/Database/")
+        if config.db_name_override:
+            candidate = _translate_path(config.db_name_override)
+            if not os.path.isfile(candidate) and db_dir:
+                candidate = os.path.join(db_dir, config.db_name_override)
+            sqlite_path = candidate
+        else:
+            sqlite_path = find_latest_sqlite_db(db_dir)
+        return DatabaseLibrary(SQLiteBackend(sqlite_path).connect())
+
+    if config.db_type == "sqlite":
+        return DatabaseLibrary(SQLiteBackend(config.db_sqlite_path).connect())
+    backend = MySQLBackend(
+        host=config.db_host,
+        port=config.db_port,
+        user=config.db_user,
+        password=config.db_pass,
+        db_name=config.db_name,
+    )
+    return DatabaseLibrary(backend.connect())
 
 
 def execute(method: str, params: dict | None = None) -> dict:
@@ -368,6 +451,22 @@ def _string(current, setting_id: str) -> str:
         return current.getSettingString(setting_id).strip()
     except Exception:
         return ""
+
+
+def _raw_string(current, setting_id: str) -> str:
+    try:
+        return str(current.getSettingString(setting_id) or "")
+    except Exception:
+        return ""
+
+
+def _translate_path(raw: str) -> str:
+    if not raw:
+        return ""
+    try:
+        return os.path.normpath((xbmcvfs.translatePath(raw) or raw).strip())
+    except Exception:
+        return os.path.normpath(raw.strip())
 
 
 def _bool(current, setting_id: str, default: bool) -> bool:

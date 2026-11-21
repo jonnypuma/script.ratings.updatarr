@@ -47,6 +47,9 @@ def main(argv) -> None:
     if action in {"status", "testkeys"}:
         show_status()
         return
+    if action in {"testdb", "dbtest"}:
+        test_database()
+        return
     background = _background_flag(params)
     dry_run_override = is_truthy(params.get("dry_run")) if "dry_run" in params else None
     raw_type = params.get("mediatype") or params.get("content") or params.get("type") or params.get("dbtype") or ""
@@ -238,9 +241,10 @@ def _run_custom(types: list[str], background: bool, runner, dry_run_override: bo
     monitor = kodi.KodiMonitor()
     progress = None
     limiter = None
+    library = None
     try:
         _warn_missing(config, scheduled=False)
-        library = kodi.KodiLibrary()
+        library = kodi.open_library(config)
         progress = kodi.open_progress(kodi.text(32105), background, monitor)
         sources, limiter = _sources(config, progress, monitor)
         stats = runner(library, sources, config, progress, monitor)
@@ -255,6 +259,8 @@ def _run_custom(types: list[str], background: bool, runner, dry_run_override: bo
     except Exception as exc:
         _announce_error(exc, types, background, scheduled=False)
     finally:
+        if library is not None:
+            library.close()
         if limiter is not None:
             kodi.write_limits(limiter.state)
         if progress is not None:
@@ -362,14 +368,16 @@ def run_many(
     monitor = kodi.KodiMonitor()
     progress = None
     limiter = None
+    library = None
     try:
         _warn_missing(config, scheduled)
         kodi.log("Updating ratings for " + ", ".join(types))
+        library = kodi.open_library(config)
         progress = kodi.open_progress(kodi.text(32105), background, monitor)
         sources, limiter = _sources(config, progress, monitor)
         stats = update_types(
             types,
-            kodi.KodiLibrary(),
+            library,
             sources,
             config,
             progress=progress,
@@ -393,6 +401,8 @@ def run_many(
         if scheduled:
             kodi.write_last_run()
     finally:
+        if library is not None:
+            library.close()
         if limiter is not None:
             kodi.write_limits(limiter.state)
         if progress is not None:
@@ -446,9 +456,35 @@ def show_runs() -> None:
     kodi.show_text(kodi.text(32050), "\n\n".join(lines))
 
 
+def test_database() -> None:
+    config = kodi.load_config()
+    library = None
+    try:
+        library = kodi.open_library(config)
+        kodi.notify(kodi.text(32191, target=library.describe()), "info")
+    except Exception as exc:
+        kodi.log(f"Database test failed: {exc}")
+        kodi.notify(kodi.text(32192, error=str(exc)), "error")
+    finally:
+        if library is not None:
+            library.close()
+
+
 def show_status() -> None:
     config = kodi.load_config()
-    lines = ["=== Local IMDb Database ==="]
+    lines = ["=== Video Library ==="]
+    lib = None
+    try:
+        lib = kodi.open_library(config)
+        lines.append(lib.describe())
+    except Exception as exc:
+        lines.append(f"Error: {exc}")
+    finally:
+        if lib is not None:
+            lib.close()
+
+    lines.append("")
+    lines.append("=== Local IMDb Database ===")
     if not config.use_imdb_data:
         lines.append("Disabled")
     else:

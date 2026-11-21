@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.3.2] - 2026-11-21
+
+### Added
+- **Configurable Database Backend:** Added a **Database** settings tab (`db_mode`: `jsonrpc`, `auto`, `manual`) supporting direct **MariaDB / MySQL** (bundled pure-Python `pymysql`) and **SQLite** connections with configurable server/host, port, username, password, database name (with automatic schema version resolution), or `advancedsettings.xml` auto-detection + database name override.
+- **Database Connection Test:** Added **Test database connection** (`action=testdb`) in Database settings and added the active Video Library target to **Status & test keys**.
+
+---
+
 ## [1.3.1] - 2026-11-20
 
 ### Added

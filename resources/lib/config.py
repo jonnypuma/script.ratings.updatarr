@@ -57,6 +57,15 @@ class Config:
     startup_delay: int = 120
     update_on_scan: bool = False
     pause_during_playback: bool = True
+    db_mode: str = "jsonrpc"
+    db_name_override: str = ""
+    db_type: str = "mysql"
+    db_host: str = "localhost"
+    db_port: int = 3306
+    db_name: str = "kodi22_videos"
+    db_user: str = "kodi"
+    db_pass: str = "kodi"
+    db_sqlite_path: str = ""
 
     def __post_init__(self) -> None:
         self.tmdb_key = (self.tmdb_key or "").strip()
@@ -93,6 +102,22 @@ class Config:
             self.vote_change_percent = max(0, int(self.vote_change_percent))
         except (TypeError, ValueError):
             self.vote_change_percent = 0
+        self.db_mode = (self.db_mode or "jsonrpc").strip().lower()
+        if self.db_mode not in {"jsonrpc", "auto", "manual"}:
+            self.db_mode = "jsonrpc"
+        self.db_name_override = (self.db_name_override or "").strip()
+        self.db_type = (self.db_type or "mysql").strip().lower()
+        if self.db_type not in {"mysql", "sqlite"}:
+            self.db_type = "mysql"
+        self.db_host = (self.db_host or "localhost").strip()
+        try:
+            self.db_port = max(1, min(65535, int(self.db_port or 3306)))
+        except (TypeError, ValueError):
+            self.db_port = 3306
+        self.db_name = (self.db_name or "").strip()
+        self.db_user = (self.db_user or "").strip()
+        self.db_pass = str(self.db_pass or "")
+        self.db_sqlite_path = (self.db_sqlite_path or "").strip()
 
     @property
     def tmdb_active(self) -> bool:

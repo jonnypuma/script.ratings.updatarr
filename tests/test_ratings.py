@@ -760,7 +760,11 @@ class PackageTests(unittest.TestCase):
     def test_every_referenced_string_exists(self):
         po = (ROOT / "resources/language/resource.language.en_gb/strings.po").read_text(encoding="utf-8")
         defined = set(__import__("re").findall(r'msgctxt "#(\d+)"', po))
-        blob = "\n".join(path.read_text(encoding="utf-8") for path in ROOT.rglob("*") if path.suffix in {".py", ".xml"})
+        blob = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in ROOT.rglob("*")
+            if path.suffix in {".py", ".xml"} and "pymysql" not in path.parts
+        )
         used = set(__import__("re").findall(r"\b(32\d{3})\b", blob))
         self.assertFalse(used - defined, sorted(used - defined))
 
@@ -1036,7 +1040,7 @@ class ImprovementsAndFixesTests(unittest.TestCase):
             mock.patch.object(entry.kodi, "unlock"),
             mock.patch.object(entry.kodi, "KodiMonitor", return_value=mock.MagicMock()),
             mock.patch.object(entry.kodi, "open_progress", return_value=mock.MagicMock()),
-            mock.patch.object(entry.kodi, "KodiLibrary", return_value=FakeLibrary([])),
+            mock.patch.object(entry.kodi, "open_library", return_value=FakeLibrary([])),
             mock.patch.object(entry.kodi, "write_limits"),
             mock.patch.object(entry.kodi, "write_last_run") as write_last,
             mock.patch.object(entry.kodi, "append_run"),
@@ -1206,6 +1210,97 @@ class ImprovementsAndFixesTests(unittest.TestCase):
         self.assertIn('<uniqueid type="tmdb">550</uniqueid>', out)
         self.assertNotIn("tt999", out)
 
+    def test_database_library_sqlite_read_write_and_advancedsettings(self):
+        import sqlite3
+        from resources.lib.db_library import (
+            DatabaseLibrary,
+            MySQLBackend,
+            SQLiteBackend,
+            find_latest_sqlite_db,
+            parse_advanced_settings,
+        )
+
+        parsed = parse_advanced_settings(
+            "<advancedsettings><videodatabase>"
+            "<type>mysql</type><host>192.168.0.26</host><port>3307</port>"
+            "<name>kodi22_videos</name><user>Kodi</user><pass>secret</pass>"
+            "</videodatabase></advancedsettings>"
+        )
+        self.assertEqual(
+            parsed,
+            {"type": "mysql", "host": "192.168.0.26", "port": 3307, "name": "kodi22_videos", "user": "Kodi", "pass": "secret"},
+        )
+
+        with tempfile.TemporaryDirectory() as folder:
+            db_path = os.path.join(folder, "MyVideos146.db")
+            open(os.path.join(folder, "MyVideos131.db"), "wb").close()
+            conn = sqlite3.connect(db_path)
+            conn.executescript(
+                "CREATE TABLE path (idPath INTEGER PRIMARY KEY, strPath TEXT);"
+                "CREATE TABLE files (idFile INTEGER PRIMARY KEY, idPath INTEGER, strFilename TEXT, dateAdded TEXT);"
+                "CREATE TABLE movie (idMovie INTEGER PRIMARY KEY, idFile INTEGER, c00 TEXT, c05 TEXT, c09 TEXT);"
+                "CREATE TABLE tvshow (idShow INTEGER PRIMARY KEY, c00 TEXT, c04 TEXT, c12 TEXT);"
+                "CREATE TABLE tvshowlinkpath (idShow INTEGER, idPath INTEGER);"
+                "CREATE TABLE seasons (idSeason INTEGER PRIMARY KEY, idShow INTEGER, season INTEGER);"
+                "CREATE TABLE episode (idEpisode INTEGER PRIMARY KEY, idFile INTEGER, c00 TEXT, c03 TEXT, c12 TEXT, c13 TEXT, c20 TEXT, idShow INTEGER);"
+                "CREATE TABLE rating (rating_id INTEGER PRIMARY KEY, media_id INTEGER, media_type TEXT, rating_type TEXT, rating FLOAT, votes INTEGER);"
+                "CREATE TABLE uniqueid (uniqueid_id INTEGER PRIMARY KEY, media_id INTEGER, media_type TEXT, value TEXT, type TEXT);"
+                "INSERT INTO path VALUES (1, 'smb://nas/Movies/'), (2, 'smb://nas/TV/');"
+                "INSERT INTO files VALUES (10, 1, 'Movie.mkv', '2026-11-19 10:00:00'), (11, 2, 'S01E01.mkv', '2026-11-19 11:00:00');"
+                "INSERT INTO movie VALUES (1, 10, 'Test Movie', '1', '1');"
+                "INSERT INTO tvshow VALUES (2, 'Test Show', '', '2');"
+                "INSERT INTO tvshowlinkpath VALUES (2, 2);"
+                "INSERT INTO seasons VALUES (5, 2, 1);"
+                "INSERT INTO episode VALUES (3, 11, 'Pilot', '', '1', '1', '', 2);"
+                "INSERT INTO rating VALUES (1, 1, 'movie', 'themoviedb', 7.0, 100);"
+                "INSERT INTO uniqueid VALUES (1, 1, 'movie', 'tt0000001', 'imdb'), (2, 2, 'tvshow', '100', 'tmdb');"
+            )
+            conn.commit()
+            conn.close()
+
+            self.assertEqual(find_latest_sqlite_db(folder), db_path)
+            lib = DatabaseLibrary(SQLiteBackend(db_path).connect())
+            try:
+                movies = lib.list_items("movie")
+                self.assertEqual(len(movies), 1)
+                self.assertEqual(movies[0].title, "Test Movie")
+                self.assertEqual(movies[0].ratings["themoviedb"], {"rating": 7.0, "votes": 100, "default": True})
+                self.assertEqual(movies[0].uniqueids, {"imdb": "tt0000001"})
+                self.assertEqual(movies[0].file, "smb://nas/Movies/Movie.mkv")
+
+                season_info = lib.get_season(5)
+                self.assertEqual(season_info, {"season": 1, "tvshowid": 2, "showtitle": "Test Show"})
+                eps = lib.list_episodes_for_show(2, season=1)
+                self.assertEqual(len(eps), 1)
+                self.assertEqual(eps[0].title, "Pilot")
+
+                lib.apply(
+                    movies[0],
+                    {
+                        "themoviedb": {"rating": 7.4, "votes": 150},
+                        "imdb": {"rating": 8.2, "votes": 5000, "default": True},
+                    },
+                    {"tmdb": "550", "imdb": "tt9999999"},
+                )
+                refreshed = lib.get_item("movie", 1)
+                self.assertEqual(refreshed.ratings["themoviedb"]["rating"], 7.4)
+                self.assertTrue(refreshed.ratings["imdb"]["default"])
+                self.assertFalse(refreshed.ratings["themoviedb"]["default"])
+                self.assertEqual(refreshed.uniqueids, {"imdb": "tt0000001", "tmdb": "550"})
+            finally:
+                lib.close()
+
+        # Verify MySQLBackend schema resolution picks highest <= max_schema
+        fake_pymysql = mock.MagicMock()
+        fake_conn = mock.MagicMock()
+        fake_cur = mock.MagicMock()
+        fake_cur.fetchall.return_value = [("information_schema",), ("kodi22_videos131",), ("kodi22_videos146",), ("kodi22_videos155",)]
+        fake_conn.cursor.return_value = fake_cur
+        fake_pymysql.connect.return_value = fake_conn
+        with mock.patch("resources.lib.db_library._import_pymysql", return_value=fake_pymysql):
+            backend = MySQLBackend("192.168.0.26", 3306, "Kodi", "Kodi", "kodi22_videos", max_schema=150)
+            self.assertEqual(backend.resolve_database(), "kodi22_videos146")
+
 
 class Fetch:
     def __init__(self, ratings=None, discovered_ids=None, errors=None, requested=False):
@@ -1239,6 +1334,9 @@ class FakeLibrary:
 
     def apply(self, item, ratings, uniqueids):
         self.applied.append((item, ratings, uniqueids))
+
+    def close(self):
+        return None
 
 
 class MapTransport:

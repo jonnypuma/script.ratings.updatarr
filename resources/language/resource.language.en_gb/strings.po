@@ -488,3 +488,87 @@ msgstr ""
 msgctxt "#32190"
 msgid "Dry run. Checked {checked}. Would update {updated}. Unchanged {unchanged}. Skipped {skipped}. Failed {failed}."
 msgstr ""
+
+msgctxt "#32090"
+msgid "Database"
+msgstr ""
+
+msgctxt "#32091"
+msgid "Connection mode"
+msgstr ""
+
+msgctxt "#32092"
+msgid "Kodi JSON-RPC (active library)"
+msgstr ""
+
+msgctxt "#32093"
+msgid "Direct DB (auto-detect from Kodi)"
+msgstr ""
+
+msgctxt "#32094"
+msgid "Direct DB (manual server / file)"
+msgstr ""
+
+msgctxt "#32095"
+msgid "Database name override"
+msgstr ""
+
+msgctxt "#32096"
+msgid "Leave empty to use the database from advancedsettings.xml (or the latest local MyVideos*.db). Set a base name or exact schema name to target a different database on the same server."
+msgstr ""
+
+msgctxt "#32097"
+msgid "Database type"
+msgstr ""
+
+msgctxt "#32098"
+msgid "Server / host"
+msgstr ""
+
+msgctxt "#32099"
+msgid "Port"
+msgstr ""
+
+msgctxt "#32110"
+msgid "Database name"
+msgstr ""
+
+msgctxt "#32111"
+msgid "Username"
+msgstr ""
+
+msgctxt "#32112"
+msgid "Password"
+msgstr ""
+
+msgctxt "#32113"
+msgid "SQLite database file"
+msgstr ""
+
+msgctxt "#32114"
+msgid "Test database connection"
+msgstr ""
+
+msgctxt "#32115"
+msgid "Check that the configured server, port, credentials, and video database can be reached."
+msgstr ""
+
+msgctxt "#32116"
+msgid "Choose whether to update Kodi's active library via JSON-RPC or connect directly to a specific MariaDB/MySQL server or SQLite database."
+msgstr ""
+
+msgctxt "#32117"
+msgid "MariaDB / MySQL"
+msgstr ""
+
+msgctxt "#32118"
+msgid "SQLite"
+msgstr ""
+
+msgctxt "#32191"
+msgid "Database connected: {target}"
+msgstr ""
+
+msgctxt "#32192"
+msgid "Database connection failed: {error}"
+msgstr ""
